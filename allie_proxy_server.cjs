@@ -46,15 +46,21 @@ app.post('/chat', async (req, res) => {
       headers: {
         "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://yourdomain.com/",
+        "HTTP-Referer": "https://allie-chat-proxy-production.up.railway.app/",
         "X-Title": "Allie Proxy Server"
       }
     });
 
     res.json(response.data);
   } catch (error) {
-  console.error('OpenRouter error:', error.message);
-  sendErrorEmail(error);
+  console.error('OpenRouter error:', error);
+
+  await axios.post('https://allie-chat-proxy-production.up.railway.app/report-error', {
+    error: error.message,
+    userMessage: "chat route failed",
+    timestamp: new Date().toISOString()
+  });
+
   res.status(500).json({ error: 'Something went wrong.' });
 }
 });
