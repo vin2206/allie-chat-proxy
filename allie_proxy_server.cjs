@@ -2,6 +2,7 @@ const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
 require('dotenv').config();
+const nodemailer = require('nodemailer');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -30,6 +31,32 @@ app.post('/chat', async (req, res) => {
   } catch (error) {
     console.error('OpenRouter error:', error.message);
     res.status(500).json({ error: 'Something went wrong.' });
+  }
+});
+app.post('/report-error', async (req, res) => {
+  const { error, userMessage, timestamp } = req.body;
+
+  const transporter = nodemailer.createTransport({
+    service: 'Gmail',
+    auth: {
+      user: process.env.GMAIL_USER,
+      pass: process.env.GMAIL_PASS,
+    },
+  });
+
+  const mailOptions = {
+    from: `"Allie Proxy Server" <${process.env.GMAIL_USER}>`,
+    to: process.env.ADMIN_EMAIL,
+    subject: 'Error Alert from Allie Proxy Server',
+    text: `Error: ${error}\nUser Message: ${userMessage || 'N/A'}\nTime: ${timestamp || new Date().toISOString()}`,
+  };
+
+  try {
+    await transporter.sendMail(mailOptions);
+    res.status(200).send({ message: 'Alert sent successfully.' });
+  } catch (err) {
+    console.error('Mail send failed:', err);
+    res.status(500).send({ error: 'Failed to send email.' });
   }
 });
 
