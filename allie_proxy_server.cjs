@@ -4,6 +4,30 @@ const cors = require('cors');
 require('dotenv').config();
 const nodemailer = require('nodemailer');
 
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: process.env.GMAIL_USER,
+    pass: process.env.GMAIL_PASS
+  }
+});
+
+function sendErrorEmail(error) {
+  const mailOptions = {
+    from: process.env.GMAIL_USER,
+    to: process.env.ADMIN_EMAIL,
+    subject: 'Allie Proxy Server Error',
+    text: `An error occurred:\n\n${error.stack || error.message || error}`
+  };
+
+  transporter.sendMail(mailOptions, (err, info) => {
+    if (err) {
+      console.error('Failed to send email:', err);
+    } else {
+      console.log('Error email sent:', info.response);
+    }
+  });
+}
 const app = express();
 const port = process.env.PORT || 3000;
 
@@ -29,9 +53,10 @@ app.post('/chat', async (req, res) => {
 
     res.json(response.data);
   } catch (error) {
-    console.error('OpenRouter error:', error.message);
-    res.status(500).json({ error: 'Something went wrong.' });
-  }
+  console.error('OpenRouter error:', error.message);
+  sendErrorEmail(error);
+  res.status(500).json({ error: 'Something went wrong.' });
+}
 });
 app.post('/report-error', async (req, res) => {
   const { error, userMessage, timestamp } = req.body;
