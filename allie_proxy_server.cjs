@@ -54,7 +54,7 @@ app.post('/chat', async (req, res) => {
     res.json(response.data);
   } catch (error) {
     console.error('OpenRouter error:', error);
-    sendErrorEmail(error);
+  //  sendErrorEmail(error);
     res.status(500).json({ error: 'Something went wrong.' });
   }
 });
