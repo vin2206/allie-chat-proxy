@@ -41,17 +41,15 @@ app.post('/chat', async (req, res) => {
   try {
     console.log("DEBUG: API KEY =", process.env.OPENROUTER_API_KEY);
     const response = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
-      model: "mistral-nemo-12b-celeste",  // ✅ Correct model name
-      messages: messages,
-      max_tokens: 1000
-    }, {
-      headers: {
-        "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://allie-chat-proxy-production.up.railway.app/",
-        "X-Title": "Allie Proxy Server"
-      }
-    });
+  model: "mistral-nemo-12b-celeste",
+  messages: messages,
+  max_tokens: 1000
+}, {
+  headers: {
+    "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
+    "Content-Type": "application/json"
+  }
+});
 
     res.json(response.data);
   } catch (error) {
