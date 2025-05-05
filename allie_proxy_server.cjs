@@ -1,61 +1,62 @@
-// Fully corrected `allie_proxy_server.cjs` file for CommonJS environment (Railway compatible)
-
 const express = require('express');
-const fetch = require('node-fetch');
+const cors = require('cors');
+const bodyParser = require('body-parser');
+const axios = require('axios');
 const { Resend } = require('resend');
-require('dotenv').config();
 
 const app = express();
 const port = process.env.PORT || 3000;
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+// Environment Variables
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+const RESEND_API_KEY = process.env.RESEND_API_KEY;
+const SEND_TO_EMAIL = process.env.SEND_TO_EMAIL;
+const FROM_EMAIL = process.env.FROM_EMAIL;
 
-// Error notification function
-async function sendErrorEmail(error) {
-  try {
-    await resend.emails.send({
-      from: process.env.FROM_EMAIL,
-      to: process.env.SEND_TO_EMAIL,
-      subject: 'Allie Proxy Server Error',
-      html: `<strong>Proxy Error:</strong><br><pre>${error.stack || error}</pre>`
-    });
-  } catch (emailErr) {
-    console.error('Error sending error email:', emailErr);
-  }
-}
+const resend = new Resend(RESEND_API_KEY);
 
-// Proxy endpoint
-app.use(express.json());
+app.use(cors());
+app.use(bodyParser.json());
+
 app.post('/chat', async (req, res) => {
   try {
-    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': 'https://yourdomain.com/',
-        'X-Title': 'Allie Chat'
+    const { messages, model } = req.body;
+
+    const response = await axios.post(
+      'https://openrouter.ai/api/v1/chat/completions',
+      {
+        model: model || 'mistral-nemo-12b-celeste',
+        messages,
       },
-      body: JSON.stringify({
-        model: 'mistral-nemo-12b-instruct:free',
-        messages: req.body.messages
-      })
-    });
+      {
+        headers: {
+          Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
 
-    const data = await response.json();
-    res.json(data);
-  } catch (err) {
-    console.error('Proxy failed:', err);
-    await sendErrorEmail(err);
-    res.status(500).json({ error: 'Internal Server Error' });
+    const reply = response.data.choices[0].message;
+    res.json(reply);
+  } catch (error) {
+    console.error('Chat error:', error.message);
+
+    // Send error email
+    try {
+      await resend.emails.send({
+        from: FROM_EMAIL,
+        to: SEND_TO_EMAIL,
+        subject: 'Chat Proxy Error',
+        html: `<strong>Error:</strong> ${error.message}`,
+      });
+    } catch (emailError) {
+      console.error('Email failed:', emailError.message);
+    }
+
+    res.status(500).json({ error: 'Chat request failed' });
   }
-});
-
-// Health check
-app.get('/', (req, res) => {
-  res.send('Allie Proxy Server Running.');
 });
 
 app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
+  console.log(`Proxy server running on port ${port}`);
 });
