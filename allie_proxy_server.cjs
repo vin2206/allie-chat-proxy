@@ -1,62 +1,52 @@
 const express = require('express');
-const cors = require('cors');
+const fetch = require('node-fetch');
 const bodyParser = require('body-parser');
-const axios = require('axios');
-const { Resend } = require('resend');
+require('dotenv').config();
 
 const app = express();
-const port = process.env.PORT || 3000;
-
-// Environment Variables
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-const RESEND_API_KEY = process.env.RESEND_API_KEY;
-const SEND_TO_EMAIL = process.env.SEND_TO_EMAIL;
-const FROM_EMAIL = process.env.FROM_EMAIL;
-
-const resend = new Resend(RESEND_API_KEY);
-
-app.use(cors());
 app.use(bodyParser.json());
 
-app.post('/chat', async (req, res) => {
+const resendAPIKey = process.env.RESEND_API_KEY;
+const fromEmail = process.env.FROM_EMAIL;
+const toEmail = process.env.SEND_TO_EMAIL;
+
+app.post('/report-error', async (req, res) => {
   try {
-    const { messages, model } = req.body;
+    const { error } = req.body;
+    const message = `
+      An error occurred in Allie Chat Proxy:
+      ${error}
+    `;
 
-    const response = await axios.post(
-      'https://openrouter.ai/api/v1/chat/completions',
-      {
-        model: model || 'mistral-nemo-12b-celeste',
-        messages,
+    const send = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${resendAPIKey}`,
+        'Content-Type': 'application/json'
       },
-      {
-        headers: {
-          Authorization: `Bearer ${OPENROUTER_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-      }
-    );
+      body: JSON.stringify({
+        from: fromEmail,
+        to: toEmail,
+        subject: 'Allie Chat Proxy Error Alert',
+        html: `<p>${message.replace(/\n/g, '<br>')}</p>`
+      })
+    });
 
-    const reply = response.data.choices[0].message;
-    res.json(reply);
-  } catch (error) {
-    console.error('Chat error:', error.message);
-
-    // Send error email
-    try {
-      await resend.emails.send({
-        from: FROM_EMAIL,
-        to: SEND_TO_EMAIL,
-        subject: 'Chat Proxy Error',
-        html: `<strong>Error:</strong> ${error.message}`,
-      });
-    } catch (emailError) {
-      console.error('Email failed:', emailError.message);
+    if (!send.ok) {
+      throw new Error('Failed to send error email via Resend');
     }
 
-    res.status(500).json({ error: 'Chat request failed' });
+    res.status(200).json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
   }
 });
 
-app.listen(port, () => {
-  console.log(`Proxy server running on port ${port}`);
+app.get('/', (req, res) => {
+  res.send('Allie Chat Proxy is running.');
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
 });
