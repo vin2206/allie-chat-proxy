@@ -20,7 +20,8 @@ app.post('/report-error', async (req, res) => {
       ${error}
     `;
 
-    const send = await fetch('https://api.resend.com/emails', {
+    console.log("Sending email with Resend...");
+const send = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${resendAPIKey}`,
@@ -35,6 +36,8 @@ app.post('/report-error', async (req, res) => {
     });
 
     if (!send.ok) {
+      const responseBody = await send.text();
+console.log("Resend response body:", responseBody);
       throw new Error('Failed to send error email via Resend');
     }
 
