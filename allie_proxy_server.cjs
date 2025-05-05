@@ -39,6 +39,7 @@ app.post('/chat', async (req, res) => {
   const { messages } = req.body;
 
   try {
+    console.log("DEBUG: API KEY =", process.env.OPENROUTER_API_KEY);
     const response = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
       model: "mistral-nemo-12b-celeste",  // ✅ Correct model name
       messages: messages,
