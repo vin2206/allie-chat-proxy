@@ -1,83 +1,77 @@
-const express = require('express');
-const axios = require('axios');
-const cors = require('cors');
-require('dotenv').config();
-const nodemailer = require('nodemailer');
-
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: process.env.GMAIL_USER,
-    pass: process.env.GMAIL_PASS
-  }
-});
-
-function sendErrorEmail(error) {
-  const mailOptions = {
-    from: process.env.GMAIL_USER,
-    to: process.env.ADMIN_EMAIL,
-    subject: 'Allie Proxy Server Error',
-    text: `An error occurred:\n\n${error.stack || error.message || error}`
-  };
-
-  transporter.sendMail(mailOptions, (err, info) => {
-    if (err) {
-      console.error('Failed to send email:', err);
-    } else {
-      console.log('Error email sent:', info.response);
-    }
-  });
-}
+import express from 'express';
+import bodyParser from 'body-parser';
+import { Resend } from 'resend';
+import fetch from 'node-fetch';
 
 const app = express();
 const port = process.env.PORT || 3000;
 
-app.use(cors());
-app.use(express.json());
+app.use(bodyParser.json());
+
+const resend = new Resend(process.env.RESEND_API_KEY);
+
+const SEND_TO_EMAIL = process.env.SEND_TO_EMAIL;
+const FROM_EMAIL = process.env.FROM_EMAIL;
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+const SHEET_WEBHOOK_URL = process.env.SHEET_WEBHOOK_URL; // optional
 
 app.post('/chat', async (req, res) => {
   const { messages } = req.body;
 
   try {
-    console.log("DEBUG: API KEY =", process.env.OPENROUTER_API_KEY);
-    const response = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
-  model: "mistral-nemo-12b-celeste",
-  messages: messages,
-  max_tokens: 1000
-}, {
-  headers: {
-    "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
-    "Content-Type": "application/json"
-  }
-});
+    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: "mistral/mistral-nemo-12b-celeste",
+        messages
+      })
+    });
 
-    res.json(response.data);
-  } catch (error) {
-    console.error('OpenRouter error:', error);
-    sendErrorEmail(error);
-    res.status(500).json({ error: 'Something went wrong.' });
-  }
-});
+    if (!response.ok) {
+      throw new Error(`OpenRouter Error: ${response.statusText}`);
+    }
 
-app.post('/report-error', async (req, res) => {
-  const { error, userMessage, timestamp } = req.body;
-
-  const mailOptions = {
-    from: `"Allie Proxy Server" <${process.env.GMAIL_USER}>`,
-    to: process.env.ADMIN_EMAIL,
-    subject: 'Error Alert from Allie Proxy Server',
-    text: `Error: ${error}\nUser Message: ${userMessage || 'N/A'}\nTime: ${timestamp || new Date().toISOString()}`
-  };
-
-  try {
-    await transporter.sendMail(mailOptions);
-    res.status(200).send({ message: 'Alert sent successfully.' });
+    const data = await response.json();
+    return res.json(data);
   } catch (err) {
-    console.error('Mail send failed:', err);
-    res.status(500).send({ error: 'Failed to send email.' });
+    console.error('Chat Proxy Error:', err.message);
+
+    // Optional: log to Google Sheet
+    if (SHEET_WEBHOOK_URL) {
+      try {
+        await fetch(SHEET_WEBHOOK_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            timestamp: new Date().toISOString(),
+            error: err.message
+          })
+        });
+      } catch (sheetErr) {
+        console.error('Google Sheet log failed:', sheetErr.message);
+      }
+    }
+
+    // Send email using Resend
+    try {
+      await resend.emails.send({
+        from: FROM_EMAIL,
+        to: SEND_TO_EMAIL,
+        subject: 'Allie Proxy Error',
+        html: `<p><strong>Error in Allie Proxy:</strong><br>${err.message}</p>`
+      });
+    } catch (emailErr) {
+      console.error('Resend Email Error:', emailErr.message);
+    }
+
+    return res.status(500).json({ error: 'Internal Server Error' });
   }
 });
 
 app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
+  console.log(`Allie Proxy Server is running on port ${port}`);
 });
