@@ -28,6 +28,7 @@ function sendErrorEmail(error) {
     }
   });
 }
+
 const app = express();
 const port = process.env.PORT || 3000;
 
@@ -39,7 +40,7 @@ app.post('/chat', async (req, res) => {
 
   try {
     const response = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
-      model: "mistral:nemo-llama-3-8b-instruct",
+      model: "mistral:nemo-mixtral-8x7b-codellama",  // Corrected model name
       messages: messages,
       max_tokens: 1000
     }, {
@@ -53,33 +54,20 @@ app.post('/chat', async (req, res) => {
 
     res.json(response.data);
   } catch (error) {
-  console.error('OpenRouter error:', error);
-
-  //  await axios.post('https://allie-chat-proxy-production.up.railway.app/report-error', {
-  //  error: error.message,
- //   userMessage: "chat route failed",
- //   timestamp: new Date().toISOString()
-//  });
-
-  res.status(500).json({ error: 'Something went wrong.' });
-}
+    console.error('OpenRouter error:', error);
+    sendErrorEmail(error);
+    res.status(500).json({ error: 'Something went wrong.' });
+  }
 });
+
 app.post('/report-error', async (req, res) => {
   const { error, userMessage, timestamp } = req.body;
-
-  const transporter = nodemailer.createTransport({
-    service: 'Gmail',
-    auth: {
-      user: process.env.GMAIL_USER,
-      pass: process.env.GMAIL_PASS,
-    },
-  });
 
   const mailOptions = {
     from: `"Allie Proxy Server" <${process.env.GMAIL_USER}>`,
     to: process.env.ADMIN_EMAIL,
     subject: 'Error Alert from Allie Proxy Server',
-    text: `Error: ${error}\nUser Message: ${userMessage || 'N/A'}\nTime: ${timestamp || new Date().toISOString()}`,
+    text: `Error: ${error}\nUser Message: ${userMessage || 'N/A'}\nTime: ${timestamp || new Date().toISOString()}`
   };
 
   try {
