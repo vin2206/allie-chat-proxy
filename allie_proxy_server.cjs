@@ -55,11 +55,11 @@ app.post('/chat', async (req, res) => {
   } catch (error) {
   console.error('OpenRouter error:', error);
 
-  await axios.post('https://allie-chat-proxy-production.up.railway.app/report-error', {
-    error: error.message,
-    userMessage: "chat route failed",
-    timestamp: new Date().toISOString()
-  });
+  //  await axios.post('https://allie-chat-proxy-production.up.railway.app/report-error', {
+  //  error: error.message,
+ //   userMessage: "chat route failed",
+ //   timestamp: new Date().toISOString()
+//  });
 
   res.status(500).json({ error: 'Something went wrong.' });
 }
