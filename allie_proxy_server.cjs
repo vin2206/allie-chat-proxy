@@ -40,7 +40,7 @@ app.post('/chat', async (req, res) => {
 
   try {
     const response = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
-      model: "mistral:nemo-mixtral-8x7b-codellama",  // Corrected model name
+      model: "mistral-nemo-12b-celeste",  // ✅ Correct model name
       messages: messages,
       max_tokens: 1000
     }, {
