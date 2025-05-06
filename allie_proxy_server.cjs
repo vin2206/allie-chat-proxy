@@ -15,14 +15,11 @@ const toEmail = process.env.SEND_TO_EMAIL;
 app.post('/report-error', async (req, res) => {
   try {
     const { error } = req.body;
-    const message = `
-      An error occurred in Allie Chat Proxy:
-      ${error}
-    `;
+    const message = `An error occurred in Allie Chat Proxy:\n${error}`;
 
     console.log("Sending email with Resend...");
 
-    const send = await fetch('https://api.resend.com/emails', {
+    const response = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${resendAPIKey}`,
@@ -36,17 +33,20 @@ app.post('/report-error', async (req, res) => {
       })
     });
 
-    const responseBody = await send.text();
+    const responseBody = await response.text();
     console.log("Resend response body:", responseBody);
 
-    if (!send.ok) {
-      throw new Error('Failed to send error email via Resend');
+    if (!response.ok) {
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to send error email via Resend'
+      });
     }
 
     res.status(200).json({ success: true });
 
   } catch (err) {
-    console.error("Final error:", err);
+    console.error('Final error:', err);
     res.status(500).json({ success: false, message: err.message });
   }
 });
