@@ -1,12 +1,12 @@
 const express = require('express');
 const fetch = require('node-fetch');
-const bodyParser = require('body-parser');
+// REMOVE body-parser completely (not needed)
 const cors = require('cors');
 require('dotenv').config();
 
 const app = express();
 app.use(cors());
-app.use(bodyParser.json());
+app.use(express.json());
 
 const resendAPIKey = process.env.RESEND_API_KEY;
 const fromEmail = process.env.FROM_EMAIL;
@@ -14,6 +14,7 @@ const toEmail = process.env.SEND_TO_EMAIL;
 
 app.post('/report-error', async (req, res) => {
   try {
+    console.log("Incoming /report-error body:", req.body);
     const { error } = req.body;
     const message = `An error occurred in Allie Chat Proxy:\n${error}`;
 
