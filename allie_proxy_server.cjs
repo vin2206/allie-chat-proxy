@@ -21,25 +21,8 @@ app.post('/report-error', async (req, res) => {
     `;
 
     console.log("Sending email with Resend...");
-let send;
-try {
-  send = await fetch('https://api.resend.com/emails', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${resendAPIKey}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      from: fromEmail,
-      to: toEmail,
-      subject: 'Allie Chat Proxy Error Alert',
-      html: `<p>${message.replace(/\n/g, '<br>')}</p>`
-    })
-  });
-} catch (fetchError) {
-  console.error("Fetch failed:", fetchError);
-  return res.status(500).json({ success: false, message: 'Fetch crashed before sending' });
-}
+
+    const send = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${resendAPIKey}`,
@@ -53,14 +36,17 @@ try {
       })
     });
 
+    const responseBody = await send.text();
+    console.log("Resend response body:", responseBody);
+
     if (!send.ok) {
-      const responseBody = await send.text();
-console.log("Resend response body:", responseBody);
       throw new Error('Failed to send error email via Resend');
     }
 
     res.status(200).json({ success: true });
+
   } catch (err) {
+    console.error("Final error:", err);
     res.status(500).json({ success: false, message: err.message });
   }
 });
