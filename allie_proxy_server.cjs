@@ -58,6 +58,40 @@ try {
   }
 });
 
+app.post("/chat", async (req, res) => {
+  try {
+    const messages = req.body.messages;
+
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "mistral-nemo:free",
+        messages
+      })
+    });
+
+    const data = await response.json();
+    res.json(data);
+  } catch (error) {
+    console.error("OpenRouter chat error:", error.message);
+
+    await fetch(`${process.env.SERVER_URL}/report-error`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        error: error.message || "Unknown error in /chat",
+        route: "/chat"
+      })
+    });
+
+    res.status(500).json({ error: "Something went wrong. Our team has been alerted." });
+  }
+});
+
 app.get('/', (req, res) => {
   res.send('Allie Chat Proxy is running.');
 });
