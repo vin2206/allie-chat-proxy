@@ -2,6 +2,7 @@
   "name": "allie-chat-proxy",
   "version": "1.0.0",
   "description": "Proxy server for Allie chatbot",
+  "main": "allie_proxy_server.cjs",
   "type": "commonjs",
   "scripts": {
     "start": "node allie_proxy_server.cjs"
