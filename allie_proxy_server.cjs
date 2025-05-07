@@ -79,14 +79,18 @@ app.post("/chat", async (req, res) => {
   } catch (error) {
     console.error("OpenRouter chat error:", error.message);
 
-    await fetch(`${process.env.SERVER_URL}/report-error`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        error: error.message || "Unknown error in /chat",
-        route: "/chat"
-      })
-    });
+    try {
+  await fetch(`${process.env.SERVER_URL}/report-error`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      error: error.message || "Unknown error in /chat",
+      route: "/chat"
+    })
+  });
+} catch (reportErr) {
+  console.error("Failed to auto-report error:", reportErr.message);
+}
 
     res.status(500).json({ error: "Something went wrong. Our team has been alerted." });
   }
