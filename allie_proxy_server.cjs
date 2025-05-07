@@ -59,6 +59,7 @@ try {
 });
 
 app.post("/chat", async (req, res) => {
+  console.log("POST /chat hit!", req.body);
   try {
     const messages = req.body.messages;
 
