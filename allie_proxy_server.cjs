@@ -36,7 +36,7 @@ try {
     })
   });
 } catch (fetchErr) {
-  console.error("Fetch failed:", fetchErr);
+  console.error("Fetch failed:", fetchErr.message);
   return res.status(500).json({ success: false, message: "Fetch failed: " + fetchErr.message });
 }
 
