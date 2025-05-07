@@ -70,7 +70,7 @@ app.post("/chat", async (req, res) => {
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        model: "mistral-nemo-12b",
+        model: "nothingisreal/mn-celeste-12b",
         messages
       })
     });
