@@ -85,9 +85,13 @@ app.post("/chat", async (req, res) => {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      error: error.message || "Unknown error in /chat",
-      route: "/chat"
-    })
+  error: {
+    message: error.message,
+    stack: error.stack
+  },
+  location: "/chat route",
+  details: "OpenRouter API call failed"
+})
   });
 } catch (reportErr) {
   console.error("Failed to auto-report error:", reportErr.message);
