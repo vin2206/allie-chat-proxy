@@ -70,7 +70,7 @@ app.post("/chat", async (req, res) => {
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        model: "nothingisreal/mn-celeste-12b",
+        model: "openchat/openchat-3.5-0106",
         messages
       })
     });
