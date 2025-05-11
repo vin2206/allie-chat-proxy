@@ -106,6 +106,26 @@ app.get('/', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
+
+app.get('/test-key', async (req, res) => {
+  try {
+    const response = await fetch("https://openrouter.ai/api/v1/models", {
+      headers: {
+        "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`
+      }
+    });
+
+    const data = await response.json();
+    if (response.ok) {
+      res.status(200).json({ success: true, models: data });
+    } else {
+      res.status(500).json({ success: false, error: data });
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
