@@ -105,7 +105,7 @@ app.post('/chat', async (req, res) => {
 
   try {
     const primaryModel = "invalid-model-name";
-    const fallbackModel = "gryphe/mythomax-l2-13b";
+    const fallbackModel = "another-invalid";
 
     let response = await fetchFromModel(primaryModel);
 
