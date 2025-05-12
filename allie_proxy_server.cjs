@@ -90,6 +90,8 @@ app.post('/chat', async (req, res) => {
 
   // ------------------ Model Try Block ------------------
   async function fetchFromModel(modelName) {
+    console.log("Calling model:", modelName);
+console.log("API key prefix:", process.env.OPENROUTER_API_KEY?.slice(0, 10));
     return await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       headers: {
