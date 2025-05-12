@@ -114,4 +114,4 @@ app.get('/', (req, res) => {
 
 app.get('/test-key', async (req, res) => {
   try {
-    const response = await fetch('https://openrouter.ai/api/v1/model
+    const response = await fetch("https://openrouter.ai/api/v1/models", {
