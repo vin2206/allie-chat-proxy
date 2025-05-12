@@ -17,7 +17,7 @@ app.post('/report-error', async (req, res) => {
   try {
     console.log("Incoming /report-error body:", req.body);
     const { error } = req.body;
-    const message = `An error occurred in Allie Chat Proxy:\n${error}`;
+    const message = `An error occurred in Allie Chat Proxy:\n${JSON.stringify(error, null, 2)}`;
 
     console.log("Sending email with Resend...");
 
