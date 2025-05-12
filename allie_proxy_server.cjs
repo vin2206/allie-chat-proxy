@@ -11,6 +11,7 @@ app.use(express.json());
 const resendAPIKey = process.env.RESEND_API_KEY;
 const fromEmail = process.env.FROM_EMAIL;
 const toEmail = process.env.SEND_TO_EMAIL;
+const errorTimestamps = []; // Track repeated input format issues
 
 app.post('/report-error', async (req, res) => {
   try {
@@ -58,46 +59,100 @@ try {
   }
 });
 
-app.post("/chat", async (req, res) => {
+app.post('/chat', async (req, res) => {
   console.log("POST /chat hit!", req.body);
-  try {
-    const messages = req.body.messages;
 
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+  const messages = req.body.messages;
+
+  // ------------------ Input Format Validation ------------------
+  if (!Array.isArray(messages)) {
+    errorTimestamps.push(Date.now());
+    const recent = errorTimestamps.filter(t => Date.now() - t < 10 * 60 * 1000); // 10 min window
+
+    if (recent.length >= 5) {
+      await fetch(`${process.env.SERVER_URL}/report-error`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          error: {
+            message: "More than 5 input errors in 10 minutes.",
+            stack: "Invalid input format",
+          },
+          location: "/chat route",
+          details: "Too many input format issues",
+        })
+      });
+      errorTimestamps.length = 0; // reset tracker
+    }
+
+    return res.status(400).json({ error: "Invalid input. Expecting `messages` array." });
+  }
+
+  // ------------------ Model Try Block ------------------
+  async function fetchFromModel(modelName) {
+    return await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        model: "nothingisreal/mn-celeste-12b",
+        model: modelName,
         messages
       })
     });
+  }
+
+  try {
+    const primaryModel = "nothingisreal/mn-celeste-12b";
+    const fallbackModel = "gryphe/mythomax-l2-13b";
+
+    let response = await fetchFromModel(primaryModel);
+
+    if (!response.ok) {
+      console.log("Primary model failed, switching to fallback...");
+      await fetch(`${process.env.SERVER_URL}/report-error`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          error: { message: "Primary model failed" },
+          location: "/chat route",
+          details: "Fallback model triggered"
+        })
+      });
+
+      response = await fetchFromModel(fallbackModel);
+
+      if (!response.ok) {
+        await fetch(`${process.env.SERVER_URL}/report-error`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            error: { message: "Fallback model also failed" },
+            location: "/chat route",
+            details: "Both models failed"
+          })
+        });
+
+        return res.status(500).json({ error: "Both models failed" });
+      }
+    }
 
     const data = await response.json();
     res.json(data);
-  } catch (error) {
-    console.error("OpenRouter chat error:", error.message);
 
-    try {
-  await fetch(`${process.env.SERVER_URL}/report-error`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-  error: {
-    message: error.message,
-    stack: error.stack
-  },
-  location: "/chat route",
-  details: "OpenRouter API call failed"
-})
-  });
-} catch (reportErr) {
-  console.error("Failed to auto-report error:", reportErr.message);
-}
-
-    res.status(500).json({ error: "Something went wrong. Our team has been alerted." });
+  } catch (err) {
+    console.error("Final error:", err);
+    await fetch(`${process.env.SERVER_URL}/report-error`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        error: { message: err.message, stack: err.stack },
+        location: "/chat route",
+        details: "Unhandled exception"
+      })
+    });
+    res.status(500).json({ error: "Something went wrong." });
   }
 });
 
