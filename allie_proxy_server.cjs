@@ -115,3 +115,12 @@ app.get('/', (req, res) => {
 app.get('/test-key', async (req, res) => {
   try {
     const response = await fetch("https://openrouter.ai/api/v1/models", {
+
+                                 } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+});
