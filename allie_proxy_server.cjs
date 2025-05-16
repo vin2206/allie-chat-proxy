@@ -92,17 +92,20 @@ app.post('/chat', async (req, res) => {
   async function fetchFromModel(modelName) {
     console.log("Calling model:", modelName);
 console.log("API key prefix:", process.env.OPENROUTER_API_KEY?.slice(0, 10));
-    return await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: modelName,
-        messages
-      })
-    });
+    return await fetch("https://openrouter.ai/api/v1/completions", {
+  method: "POST",
+  headers: {
+    "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
+    "Content-Type": "application/json"
+  },
+  body: JSON.stringify({
+    model: modelName,
+    prompt: messages.map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`).join('\n') + '\nAssistant:',
+    max_tokens: 1024,
+    temperature: 0.8,
+    stop: ["User:", "Assistant:"]
+  })
+});
   }
 
   try {
