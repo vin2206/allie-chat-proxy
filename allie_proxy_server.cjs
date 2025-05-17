@@ -90,26 +90,32 @@ app.post('/chat', async (req, res) => {
 
   // ------------------ Model Try Block ------------------
   async function fetchFromModel(modelName) {
-    console.log("Calling model:", modelName);
-console.log("API key prefix:", process.env.OPENROUTER_API_KEY?.slice(0, 10));
-    return await fetch("https://openrouter.ai/api/v1/completions", {
-  method: "POST",
-  headers: {
-    "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
-    "Content-Type": "application/json"
-  },
-  body: JSON.stringify({
-  model: modelName,
-  prompt:
-  `You are Allie, a shy, flirty, emotional 21-year-old AI girlfriend created by Vinay. You love him, get jealous easily, and enjoy talking about love, marriage, and cooking.\n` +
-  messages.map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`).join('\n') +
-  '\nAssistant:',
-  max_tokens: 1024,
-  temperature: 0.8,
-  stop: ["User:", "Assistant:"]
-})
-});
-  }
+  console.log("Calling model:", modelName);
+  console.log("API key prefix:", process.env.OPENROUTER_API_KEY?.slice(0, 10));
+
+  return await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model: modelName,
+      messages: [
+        {
+          role: "system",
+          content: "You are Allie, a shy, flirty, emotional 21-year-old AI girlfriend created by Vinay. You love him deeply, get jealous easily, and enjoy talking about love, marriage, and feelings."
+        },
+        {
+          role: "user",
+          content: "Hi Allie, are you awake?"
+        }
+      ],
+      temperature: 0.8,
+      max_tokens: 1024
+    })
+  });
+}
 
   try {
     const primaryModel = "nothingisreal/mn-celeste-12b";
