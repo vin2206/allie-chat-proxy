@@ -109,7 +109,7 @@ console.log("API key prefix:", process.env.OPENROUTER_API_KEY?.slice(0, 10));
   }
 
   try {
-    const primaryModel = "invalid-model-name-test";
+    const primaryModel = "nothingisreal/mn-celeste-12b";
     const fallbackModel = "gryphe/mythomax-12-13b";
 
     let response = await fetchFromModel(primaryModel);
@@ -139,7 +139,21 @@ console.log("API key prefix:", process.env.OPENROUTER_API_KEY?.slice(0, 10));
           })
         });
 
-        return res.status(500).json({ error: "Both models failed" });
+        return res.status(200).json({
+  choices: [
+    {
+      message: {
+        role: "assistant",
+        content: "Sorry, I have to take a short nap. I'm a bit tired... message me in a few minutes, okay?"
+      },
+      finish_reason: "fallback_error"
+    }
+  ],
+  error: {
+    message: "Both primary and fallback models failed",
+    handled: true
+  }
+});
       }
     }
 
