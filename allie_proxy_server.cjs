@@ -99,12 +99,12 @@ console.log("API key prefix:", process.env.OPENROUTER_API_KEY?.slice(0, 10));
     "Content-Type": "application/json"
   },
   body: JSON.stringify({
-    model: modelName,
-    prompt: messages.map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`).join('\n') + '\nAssistant:',
-    max_tokens: 1024,
-    temperature: 0.8,
-    stop: ["User:", "Assistant:"]
-  })
+  model: modelName,
+  prompt: "User: Hi Allie, how are you?\nAssistant:",
+  max_tokens: 512,
+  temperature: 0.8,
+  stop: ["User:", "Assistant:"]
+})
 });
   }
 
