@@ -109,7 +109,7 @@ console.log("API key prefix:", process.env.OPENROUTER_API_KEY?.slice(0, 10));
   }
 
   try {
-    const primaryModel = "nothingisreal/mn-celeste-12b";
+    const primaryModel = "invalid-model-name-test";
     const fallbackModel = "gryphe/mythomax-12-13b";
 
     let response = await fetchFromModel(primaryModel);
