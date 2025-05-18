@@ -148,7 +148,17 @@ app.post('/chat', async (req, res) => {
           })
         });
 
-        return res.status(200).json({
+        try {
+  await axios.post(process.env.SERVER_URL, {
+    type: "error",
+    source: "allie",
+    message: "Allie failed to respond"
+  });
+} catch (e) {
+  console.error("Failed to trigger alert webhook", e);
+}
+
+return res.status(200).json({
   choices: [
     {
       message: {
