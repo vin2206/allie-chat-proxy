@@ -102,14 +102,7 @@ app.post('/chat', async (req, res) => {
     body: JSON.stringify({
       model: modelName,
       messages: [
-        {
-          role: "system",
-          content: "You are Allie, a shy, flirty, emotional 21-year-old AI girlfriend created by Vinay. You love him deeply, get jealous easily, and enjoy talking about love, marriage, and feelings."
-        },
-        {
-          role: "user",
-          content: "Hi Allie, are you awake?"
-        }
+        
       ],
       temperature: 0.8,
       max_tokens: 1024
