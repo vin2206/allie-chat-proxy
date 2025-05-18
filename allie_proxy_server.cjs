@@ -119,7 +119,7 @@ app.post('/chat', async (req, res) => {
 
   try {
     const primaryModel = "nothingisreal/mn-celeste-12b";
-    const fallbackModel = "nothingisreal/mn-celeste-12b";
+    const fallbackModel = "mistralai/mistral-7b-instruct";
 
     let response = await fetchFromModel(primaryModel);
 
