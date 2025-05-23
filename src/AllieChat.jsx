@@ -97,5 +97,6 @@ export default function AllieChat() {
     Send
   </button>
 </footer>
-</div>
+  </div>
 );
+}
