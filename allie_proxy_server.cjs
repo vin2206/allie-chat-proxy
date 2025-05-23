@@ -90,7 +90,7 @@ app.post('/chat', async (req, res) => {
   }
 
   // ------------------ Model Try Block ------------------
-  async function fetchFromModel(modelName) {
+  async function fetchFromModel(modelName, messages) {
   console.log("Calling model:", modelName);
   console.log("API key prefix:", process.env.OPENROUTER_API_KEY?.slice(0, 10));
 
@@ -102,9 +102,7 @@ app.post('/chat', async (req, res) => {
     },
     body: JSON.stringify({
       model: modelName,
-      messages: [
-        
-      ],
+      messages: messages,
       temperature: 0.8,
       max_tokens: 1024
     })
@@ -115,7 +113,7 @@ app.post('/chat', async (req, res) => {
     const primaryModel = "nothingisreal/mn-celeste-12b";
     const fallbackModel = "mistralai/mistral-7b-instruct";
 
-    let response = await fetchFromModel(primaryModel);
+    let response = await fetchFromModel(primaryModel, messages);
 
     if (!response.ok) {
       console.log("Primary model failed, switching to fallback...");
@@ -129,7 +127,7 @@ app.post('/chat', async (req, res) => {
         })
       });
 
-      response = await fetchFromModel(fallbackModel);
+      response = await fetchFromModel(fallbackModel, messages);
 
       if (!response.ok) {
         await fetch(`${process.env.SERVER_URL}/report-error`, {
