@@ -170,6 +170,7 @@ return res.status(200).json({
     }
 
     const data = await response.json();
+    console.log("Model reply from OpenRouter:", JSON.stringify(data, null, 2));
     res.json({
   reply:
     data.choices?.[0]?.message?.content ||
