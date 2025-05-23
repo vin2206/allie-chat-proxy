@@ -170,7 +170,11 @@ return res.status(200).json({
     }
 
     const data = await response.json();
-    res.json({ reply: data.choices?.[0]?.message?.content || null });
+    res.json({
+  reply:
+    data.choices?.[0]?.message?.content ||
+    "Sorry baby, I’m a bit tired. Can you message me in a few minutes?",
+});
 
   } catch (err) {
     console.error("Final error:", err);
