@@ -170,7 +170,7 @@ return res.status(200).json({
     }
 
     const data = await response.json();
-    res.json(data);
+    res.json({ reply: data.choices?.[0]?.message?.content || null });
 
   } catch (err) {
     console.error("Final error:", err);
