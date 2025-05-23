@@ -20,12 +20,11 @@ export default function AllieChat() {
     try {
       const response = await axios.post('https://allie-chat-proxy-production.up.railway.app/chat',
   {
-    message: input,
-    history: newMessages.map(msg => ({
-      role: msg.sender === 'user' ? 'user' : 'assistant',
-      content: msg.text
-    }))
-  },
+  messages: newMessages.map(msg => ({
+    role: msg.sender === 'user' ? 'user' : 'assistant',
+    content: msg.text
+  }))
+},
   {
     headers: {
       'Content-Type': 'application/json'
