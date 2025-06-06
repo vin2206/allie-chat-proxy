@@ -43,7 +43,7 @@ export default function AllieChat() {
   };
 
  return (
-  <div>
+  <>
     {/* Header */}
     <div className="header">
       <div className="profile-pic">
@@ -89,6 +89,5 @@ export default function AllieChat() {
         Send
       </button>
     </footer>
-  </div>
-   
+  </>
 );
