@@ -1,0 +1,65 @@
+.chat-container {
+  background-color: #0e1016;
+  padding: 16px;
+  height: calc(100vh - 100px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column-reverse;
+}
+
+.message {
+  max-width: 70%;
+  padding: 10px 14px;
+  margin: 6px 0;
+  border-radius: 18px;
+  font-size: 15px;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.user-message {
+  background-color: #a855f7;
+  color: white;
+  align-self: flex-end;
+  border-bottom-right-radius: 5px;
+}
+
+.allie-message {
+  background-color: #2f3640;
+  color: white;
+  align-self: flex-start;
+  border-bottom-left-radius: 5px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  background-color: #121826;
+  padding: 10px 16px;
+  border-bottom: 1px solid #2a2f3a;
+}
+
+.profile-pic {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  margin-right: 12px;
+  position: relative;
+}
+
+.live-dot {
+  position: absolute;
+  bottom: 2px;
+  right: 2px;
+  width: 10px;
+  height: 10px;
+  background-color: #22c55e;
+  border-radius: 50%;
+  border: 2px solid #0e1016;
+}
+
+.username {
+  font-size: 17px;
+  font-weight: bold;
+  color: white;
+}
