@@ -43,7 +43,6 @@ export default function AllieChat() {
   };
 
  return (
-  return (
   <div>
     <div className="header">
       ...
