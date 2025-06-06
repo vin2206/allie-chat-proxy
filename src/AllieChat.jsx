@@ -1,6 +1,7 @@
 // AllieChat.jsx
 import { useState } from 'react';
 import axios from 'axios';
+import './ChatUI.css';
 
 export default function AllieChat() {
   const [messages, setMessages] = useState([
@@ -42,7 +43,21 @@ export default function AllieChat() {
   };
 
  return (
-  <div className="h-screen bg-black text-white flex flex-col">
+  return (
+  <div>
+    <div className="header">
+      ...
+    </div>
+
+    <div className="chat-container">
+      ...
+    </div>
+
+    <footer className="p-4 bg-gray-900 border-t ...">
+      ...
+    </footer>
+  </div>
+);
     {/* Header */}
     <header className="p-4 flex items-center gap-4 bg-gray-900 border-b border-gray-700">
       <div className="flex items-center gap-2">
