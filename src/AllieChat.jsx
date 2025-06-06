@@ -1,6 +1,7 @@
 // AllieChat.jsx
 import { useState } from 'react';
 import axios from 'axios';
+import './ChatUI.css';
 
 export default function AllieChat() {
   const [messages, setMessages] = useState([
