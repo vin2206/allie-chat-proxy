@@ -1,5 +1,4 @@
 {
-<<<<<<< HEAD
   "name": "allie-chat-app",
   "version": "0.1.0",
   "private": true,
@@ -31,7 +30,6 @@
       "last 1 firefox version",
       "last 1 safari version"
     ]
-=======
   "name": "vkved",
   "version": "1.0.0",
   "main": "index.js",
@@ -46,6 +44,5 @@
     "dotenv": "^16.5.0",
     "node-fetch": "^3.3.2",
     "nodemailer": "^7.0.2"
->>>>>>> e24f141 (Clean package.json - remove test dependencies)
   }
 }
