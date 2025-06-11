@@ -272,7 +272,7 @@ return res.status(200).json({
     {
       message: {
         role: "assistant",
-        content: "Sorry baby, I'm a bit tired. Let me take a nap... can you message me in a few minutes?"
+        content: "Oops, my phone is buzzing... can you give me a few minutes? I'll be right back. ❤️"
       },
       finish_reason: "fallback_error"
     }
