@@ -6,7 +6,14 @@ const cors = require('cors');
 require('dotenv').config();
 
 const app = express();
-app.use(cors());
+app.use(cors({
+  origin: [
+    'https://allie-chat-app-git-main-vinay-sajwans-projects.vercel.app',
+    'https://allie-chat-d9g7ehg0r-vinay-sajwans-projects.vercel.app'
+  ],
+  methods: ['GET', 'POST'],
+  credentials: true
+}));
 app.use(express.json());
 
 const resendAPIKey = process.env.RESEND_API_KEY;
