@@ -1,16 +1,1 @@
-{
-  "name": "allie-chat-proxy",
-  "version": "1.0.0",
-  "description": "Proxy server for Allie chatbot",
-  "type": "commonjs",
-  "scripts": {
-    "start": "node allie_proxy_server.cjs"
-  },
-  "dependencies": {
-    "express": "^4.18.2",
-    "node-fetch": "^2.6.9",
-    "dotenv": "^16.3.1",
-    "cors": "^2.8.5",
-    "axios": "^1.6.8"
-  }
-}
+
