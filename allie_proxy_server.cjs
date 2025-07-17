@@ -207,10 +207,10 @@ if (replyCount > 25) {
           ...messages
 ],
 temperature: 0.8,
-max_tokens: replyCount <= 6 ? 80 : replyCount <= 12 ? 120 : 180
+        max_tokens: 512
       })
-    ); // ✅ closes fetch() only, NOT the function itself
-  }   // ✅ closes async fetchFromModel function
+    });
+  }
 
   try {
     let response = await fetchFromModel(modelName, messages);
