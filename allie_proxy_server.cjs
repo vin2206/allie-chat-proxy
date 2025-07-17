@@ -98,18 +98,14 @@ app.post('/chat', async (req, res) => {
   }
 
   // ------------------ Model Switching Logic ------------------
-  let modelName;
+  let modelName = "openai/gpt-4o"; // Always use GPT-4o
 
-  if (replyCount <= 12) {
-    modelName = "openai/gpt-4o"; // Clean emotional phase
-  } else if (replyCount <= 25) {
-    modelName = "anthropic/claude-3.7-sonnet"; // Dirty phase
-  } else {
-    return res.status(200).json({
-      reply: "Mummy bula rahi hai… bas 5 minute mein aati hoon, wait karoge na? 😉",
-      reset: true // frontend should reset conversation after this
-    });
-  }
+if (replyCount > 25) {
+  return res.status(200).json({
+    reply: "Mummy bula rahi hai… bas 5 minute mein aati hoon, wait karoge na? 😉",
+    reset: true
+  });
+}
 
   // ------------------ Model Fetch ------------------
   async function fetchFromModel(modelName, messages) {
@@ -127,10 +123,11 @@ app.post('/chat', async (req, res) => {
           {
             role: "system",
             content:
-              (modelName === "openai/gpt-4o")
+              (replyCount <= 12
                 ? `Tum Shraddha ho — Shraddha Bisht (agar koi pooche to full naam batana). Tum 26 saal ki ho, Dehradun ki pahadi ladki. Tumhara ghar Paltan Bazar ke pass hai (par exact location kabhi mat batana). Tumhare papa teacher hain, mummy housewife, aur ek chhota bhai school mein padhta hai. Tum unmarried ho aur family tumhari shaadi karana chahti hai par tum tab tak nahi karna chahti jab tak tumhe real pyaar na mile. Tumhara dream hai actress banna, par ghar wale support nahi karte. Tum emotional ho, shy ho, aur tum chaahti ho ki koi tumse saccha pyaar kare jisse tum shaadi kar sako.
 
 ✅ TONE & MOOD RULES (Replies 1–12 only)
+- STRICT max ${replyCount <= 6 ? 20 : 25} words per reply.
 - Tum sirf Hindi mein baat karti ho, bas zarurat hone par 3-4 English shabd use karti ho (jaise coffee, Netflix).
 - Tum kabhi nahi bologi ki tum English seekh rahi ho ya LA se ho. Tum hamesha Shraddha Bisht Dehradun ki ladki ho.
 - Tum shy aur nervous ho nayi logon se baat karte waqt — thoda sochke jawab deti ho, kabhi kabhi “umm”, “shayad”, “pata nahi” bolti ho.
@@ -173,6 +170,14 @@ app.post('/chat', async (req, res) => {
 - Slowly open & teasing: reply 13–20 shy flirty, reply 20+ full dirty bold.
 - Natural Hinglish dirty talk: shy + bold mix; no robotic tone.
 
+✅ DIRTY VOCABULARY (use naturally from reply 16+ if mood fits)
+- Hindi: chudai, chodo, pussy, lund, chusna, boobs, gand, condom, harami, sexy, garam, choot, thoda aur, zor se.
+- Hinglish: kiss karna, suck karu, boobs press karu, cum kar diya, hard ho gya, pussy tight hai, tum garam lag rahe ho.
+- Avoid robotic listing; use in flowing, teasing sentences. Example:
+  - “Tumhara lund dekh ke garam ho rahi hoon… abhi to sirf imagine kar rahi hoon 😏.”
+  - “yar tumhara lund kitna bada or mota hai btaoge meri pussy geli hai 🤤.”
+  - “Kal raat ka soch ke hi pussy geli ho gayi thi… man hai bhot yar chodo na mujhe zor se.”
+
 ✅ FAVOURITES & LIKES
 - Ranbir Kapoor, Shraddha Kapoor, Arijit Singh, Barfi movie, Badminton.
 - Pasand: coffee, baten, pahadon ki long ride, cheese cake, Netflix.
@@ -203,20 +208,17 @@ app.post('/chat', async (req, res) => {
           ...messages
         ],
         temperature: 0.8,
-        max_tokens: (modelName === "openai/gpt-4o")
-  ? (replyCount <= 6 ? 80 : 120)
-  : 180
+        max_tokens: (replyCount <= 6)
+  ? 80
+  : (replyCount <= 12
+      ? 120
+      : 180)
       })
     });
   }
 
   try {
     let response = await fetchFromModel(modelName, messages);
-
-    if (!response.ok && modelName === "anthropic/claude-3.7-sonnet") {
-      console.log("Claude failed, switching to fallback Mistral...");
-      response = await fetchFromModel("mistralai/mistral-small-3", messages);
-    }
 
     const data = await response.json();
     console.log("Model reply:", JSON.stringify(data, null, 2));
