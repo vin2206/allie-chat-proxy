@@ -71,7 +71,7 @@ app.post('/chat', async (req, res) => {
   console.log("POST /chat hit!", req.body);
 
   const messages = req.body.messages;
-  const replyCount = messages.filter(m => m.role === "user").length;
+  const replyCount = messages.length;
 
   // ------------------ Input Format Validation ------------------
   if (!Array.isArray(messages)) {
