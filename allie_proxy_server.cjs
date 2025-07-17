@@ -206,16 +206,15 @@ if (replyCount > 25) {
 - Pause 5 min, then GPT-4o clean phase se wapas shuru.`
           },
           ...messages
-        ],
-        temperature: 0.8,
-        max_tokens:
-  replyCount <= 6
-    ? 80
-    : replyCount <= 12
-      ? 120
-      : 180
-    })
-  );
+      ],
+      temperature: 0.8,
+      max_tokens: replyCount <= 6
+        ? 80
+        : replyCount <= 12
+          ? 120
+          : 180
+    }); // ✅ closes JSON.stringify body properly
+  }
 
   try {
     let response = await fetchFromModel(modelName, messages);
