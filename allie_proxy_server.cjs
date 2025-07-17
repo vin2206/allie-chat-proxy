@@ -208,14 +208,14 @@ if (replyCount > 25) {
           ...messages
         ],
         temperature: 0.8,
-        max_tokens: replyCount <= 6
-  ? 80
-  : replyCount <= 12
+        max_tokens:
+  replyCount <= 6
+    ? 80
+    : replyCount <= 12
       ? 120
       : 180
-      })
-    });
-  }
+    })
+  );
 
   try {
     let response = await fetchFromModel(modelName, messages);
