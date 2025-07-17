@@ -210,9 +210,9 @@ if (replyCount > 25) {
         temperature: 0.8,
         max_tokens: (replyCount <= 6)
   ? 80
-  : (replyCount <= 12
+  : replyCount <= 12
       ? 120
-      : 180)
+      : 180
       })
     });
   }
