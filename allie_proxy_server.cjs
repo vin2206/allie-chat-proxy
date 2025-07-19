@@ -194,6 +194,18 @@ app.post('/chat', async (req, res) => {
 }
 
   try {
+
+    // ------------------ Pause After 25 Replies ------------------
+const userReplyCount = messages.filter(m => m.role === "assistant").length;
+
+if (userReplyCount >= 25) {
+  console.log("Pausing for 5 minutes before resuming...");
+  return res.status(200).json({
+    reply: "Mummy bula rahi hai… bas 5 minute mein aati hoon, wait karoge na? 😘",
+    pause: true
+  });
+}
+    
     const primaryModel = "anthropic/claude-3.7-sonnet";
 const fallbackModel = "mistralai/mistral-small-3";
 
