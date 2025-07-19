@@ -181,7 +181,7 @@ app.post('/chat', async (req, res) => {
   {
    role: "system",
    content:
-     (modelName === "openai/gpt-4o")
+     (modelName === "anthropic/claude-3.7-sonnet")
        ? shraddhaPrompt
        : "You are a girl who replies sweetly in a simple friendly tone."
     },
@@ -194,7 +194,7 @@ app.post('/chat', async (req, res) => {
 }
 
   try {
-    const primaryModel = "openai/gpt-4o";
+    const primaryModel = "anthropic/claude-3.7-sonnet";
 const fallbackModel = "mistralai/mistral-small-3";
 
     let response = await fetchFromModel(primaryModel, messages);
