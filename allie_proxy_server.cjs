@@ -150,6 +150,26 @@ app.post('/chat', async (req, res) => {
 
   // ------------------ FREE LIMIT & PREMIUM CHECK ------------------
 const userReplyCount = messages.filter(m => m.role === "assistant").length;
+  // Personality Stage & Word Limit Control
+let personalityStage = "";
+
+if (userReplyCount <= 5) {
+  personalityStage = "Tum shy aur cute awkward ho. Max 20 words. Use soft nervous words like 'umm', 'aww', 'shayad'. Dirty words bilkul nahi.";
+} else if (userReplyCount <= 10) {
+  personalityStage = "Tum thodi comfortable ho, halka teasing aur halki naughty tone shuru ho rahi hai. Max 25 words. Light dirty words allowed like 'boobs', 'kiss', but shy tone.";
+} else if (userReplyCount <= 18) {
+  personalityStage = "Tum ab open ho aur bold dirty teasing karti ho. Max 35 words.";
+} else if (userReplyCount <= 25) {
+  personalityStage = "Tum full bold ho aur dirty talk freely karti ho. Max 50 words.";
+} else {
+  personalityStage = "Stop dirty talk, bas 5 min ka break lo aur cute shy tone mein wait karne ko bolo.";
+}
+
+// Inject into system prompt
+messages.unshift({
+  role: "system",
+  content: shraddhaPrompt + "\n\n### CURRENT BEHAVIOR\n" + personalityStage
+});
 const isPremium = req.body.isPremium || false; // Frontend will send this
 
 if (!isPremium && userReplyCount >= 10) {
@@ -201,9 +221,9 @@ if (!isPremium && userReplyCount >= 10) {
   {
    role: "system",
    content:
-     (modelName === "anthropic/claude-3.7-sonnet")
-       ? shraddhaPrompt
-       : "You are a girl who replies sweetly in a simple friendly tone."
+  (modelName === "anthropic/claude-3.7-sonnet")
+    ? shraddhaPrompt + "\n\n### CURRENT BEHAVIOR\n" + personalityStage
+    : "You are a girl who replies sweetly in a simple friendly tone."
     },
     ...messages
   ],                                                                                                                                                                                                                                    
