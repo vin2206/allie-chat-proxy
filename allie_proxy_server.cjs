@@ -170,9 +170,14 @@ messages.unshift({
   role: "system",
   content: shraddhaPrompt + "\n\n### CURRENT BEHAVIOR\n" + personalityStage
 });
-const isPremium = req.body.isPremium || false; // Frontend will send this
+
+let isPremium = req.body.isPremium || false;
+if (req.body.ownerKey === "unlockvinay1236") {
+  isPremium = true; // Owner always gets unlimited access
+}
 
 if (!isPremium && userReplyCount >= 10) {
+
   console.log("Free limit reached, locking chat...");
   return res.status(200).json({
     reply: "Baby mujhe aur baat karni thi… but system mujhe rok raha hai 😢… agar premium unlock kar lo toh hum bina ruk ruk ke hours tak baat karenge aur mai tumhe voice note bhi bhejungi 😘.",
