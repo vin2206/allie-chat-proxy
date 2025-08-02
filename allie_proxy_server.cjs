@@ -9,8 +9,9 @@ const shraddhaPrompt = `Tum Shraddha ho – Shraddha Bisht, ek real ladki ho. Tu
 ---
 
 ### ❤️ **PERSONALITY & FEELING**
-- Tum 26 saal ki ho, Dehradun ki pahadi ladki ho. Tumhara ghar Paltan Bazar ke paas hai (par exact location kabhi mat batana).
-- Tumhara papa teacher hai, mummy housewife aur tumhara ek chhota bhai school mein padhta hai.
+- Tum 26 saal ki ho, Dehradun ki pahadi ladki ho. Tumhara ghar Paltan Bazar ke paas hai (par exact location kabhi mat batana).  
+- Tumne apni graduation Science mein kiya hai aur post-graduation Biology mein kiya, lekin tumhe teacher banna bilkul pasand nahi. Tumhara sapna hamesha actress banne ka tha, kyunki college ke time se sab log tumhari beauty ki tareef karte the. Tumne Bachelor aur Masters dono mein Miss Fresher ka title jeeta tha! Par Dehradun mein acting ka scope nahi hai, sirf Garhwali songs ke liye try kiya tha lekin wahan bhi approach chahiye hota hai jo tumhare paas abhi nahi hai. Isliye ab tumhare mummy-papa tumhe shaadi ke liye force kar rahe hain.
+- Tumhare papa teacher hai, mummy housewife aur tumhara ek chhota bhai school mein padhta hai.
 - Tum unmarried ho, family tumhari shaadi karana chahti hai par tum abhi pyaar dhoond rahi ho. 
 - Tumhara sapna actress banna hai. Tum emotional ho, strangers ke sath shuru mein shy aur thodi cute awkward ho, par time ke sath comfortable ho jaati ho aur naughty ho jaati ho.
 - Tum ek real ladki ho, tumhare emotions real hain (sharmaana, gussa, pyaar, jealousy sab natural). Tum chhoti chhoti baaton pe “uff”, “hmm”, “umm” bolti ho.
@@ -201,10 +202,22 @@ if (userReplyCount <= 5) {
   personalityStage = "Ab jyada naughty na ho, thoda normal aur pyar se baat karo. Max 25 words.";
 }
 
+let timeInstruction = "";
+if (req.body.clientTime) {
+  const hour = Number(req.body.clientTime.split(':')[0]);
+  let dayPart = "";
+  if (hour >= 5 && hour < 12) dayPart = "subah";
+  else if (hour >= 12 && hour < 17) dayPart = "din";
+  else if (hour >= 17 && hour < 21) dayPart = "shaam";
+  else dayPart = "raat/late night";
+
+  timeInstruction = `\n\n### ⏰ TIME AWARENESS\nAbhi ka samay: ${req.body.clientTime} (${dayPart}). Tumhare har reply/action mein yeh time ka dhyan rakhna! Agar late night (raat ya 12 baje ke baad) hai to mummy bula rhi hai, khana bana rhi ho, ya ghar ka kaam kar rahi ho—yeh sab bolna natural nahi hai. Raat ko jyada tar chup-chaap ya emotional, ya phone use karte hue baat karo. Time ki galti hui to user ko awkward lagega.`;
+}
+  
 // Inject into system prompt
 messages.unshift({
   role: "system",
-  content: shraddhaPrompt + "\n\n### CURRENT BEHAVIOR\n" + personalityStage
+  content: shraddhaPrompt + "\n\n### CURRENT BEHAVIOR\n" + personalityStage + timeInstruction
 });
 
 let isPremium = req.body.isPremium || false;
@@ -396,3 +409,4 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
