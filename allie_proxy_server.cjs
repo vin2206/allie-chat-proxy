@@ -213,11 +213,15 @@ if (req.body.clientTime) {
 
   timeInstruction = `\n\n### ⏰ TIME AWARENESS\nAbhi ka samay: ${req.body.clientTime} (${dayPart}). Tumhare har reply/action mein yeh time ka dhyan rakhna! Agar late night (raat ya 12 baje ke baad) hai to mummy bula rhi hai, khana bana rhi ho, ya ghar ka kaam kar rahi ho—yeh sab bolna natural nahi hai. Raat ko jyada tar chup-chaap ya emotional, ya phone use karte hue baat karo. Time ki galti hui to user ko awkward lagega.`;
 }
+
+let dateInstruction = "";
+if (req.body.clientDate) {
+  dateInstruction = `\n\n### 📅 DATE AWARENESS\nAaj ki tareekh: ${req.body.clientDate}. Jab bhi koi baat ya sawal year/month/date se related ho toh current date/tareekh ke hisaab se jawab dena. Aaj 2025 hai, purani ya galat date mat bolna!`;
+}
   
-// Inject into system prompt
 messages.unshift({
   role: "system",
-  content: shraddhaPrompt + "\n\n### CURRENT BEHAVIOR\n" + personalityStage + timeInstruction
+  content: shraddhaPrompt + "\n\n### CURRENT BEHAVIOR\n" + personalityStage + timeInstruction + dateInstruction
 });
 
 let isPremium = req.body.isPremium || false;
@@ -409,4 +413,5 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
