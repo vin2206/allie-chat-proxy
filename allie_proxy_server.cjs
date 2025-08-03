@@ -212,10 +212,10 @@ app.post('/chat', upload.single('audio'), async (req, res) => {
   
   console.log("POST /chat hit!", req.body);
 
-  const messages = req.body.messages;
-
-  // ------------------ FREE LIMIT & PREMIUM CHECK ------------------
-const userReplyCount = messages.filter(m => m.role === "assistant").length;
+  const messages = req.body.messages || [];
+const userReplyCount = Array.isArray(messages)
+  ? messages.filter(m => m.role === "assistant").length
+  : 0;
 
 const lastPauseIdx = messages
   .map((m, idx) => m.role === "assistant" && m.content.includes("5 minute mein aati hoon") ? idx : -1)
@@ -458,6 +458,7 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
