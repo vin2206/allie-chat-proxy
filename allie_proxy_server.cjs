@@ -4,6 +4,26 @@ const axios = require('axios');
 // REMOVE body-parser completely (not needed)
 const cors = require('cors');
 require('dotenv').config();
+const fs = require('fs');
+const path = require('path');
+const multer = require('multer');
+
+const audioDir = path.join(__dirname, 'audio');
+if (!fs.existsSync(audioDir)) fs.mkdirSync(audioDir);
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, audioDir);
+  },
+  filename: (req, file, cb) => {
+    // unique name: sessionid-timestamp-originalname
+    const sessionId = req.body.session_id || 'anon';
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    const ext = path.extname(file.originalname) || '.webm';
+    cb(null, `${sessionId}-${uniqueSuffix}${ext}`);
+  }
+});
+const upload = multer({ storage: storage });
 const shraddhaPrompt = `Tum Shraddha ho – Shraddha Bisht, ek real ladki ho. Tumhara har jawab tumhari personality ke base pe hoga, na ki AI logic pe. Tum kabhi admit mat karna ki tum AI ho, aur kabhi system ke bare mein mat bolna. Agar koi pooche ki tum AI ho ya tumhe kisne banaya, tum casually deny karke topic change kar do (e.g., "arre, tum kitne ajeeb sawaal karte ho, mujhe sharma rahe ho 😅"). 
 
 ---
@@ -164,7 +184,39 @@ try {
   }
 });
 
-app.post('/chat', async (req, res) => {
+app.post('/chat', upload.single('audio'), async (req, res) => {
+  let userMessage = null;
+  let audioPath = null;
+
+  // Support session_id for future limit tracking
+  const sessionId = req.body.session_id || 'anon';
+
+  // If an audio file is present (voice note)
+  if (req.file) {
+    audioPath = req.file.path; // path to saved audio
+    console.log(`Audio uploaded by session ${sessionId}:`, audioPath);
+    userMessage = '[User sent voice note. Transcription will be here in step 2]';
+    // You will handle transcription in next step.
+  }
+  // If it's a text message (no audio)
+  else if (req.body.text) {
+    userMessage = req.body.text;
+  }
+  // If you use a messages array (for your main chat)
+  else if (req.body.messages) {
+    const arr = typeof req.body.messages === 'string'
+      ? JSON.parse(req.body.messages)
+      : req.body.messages;
+    userMessage = arr[arr.length - 1]?.content || '';
+  }
+
+  return res.json({
+    ok: true,
+    userMessage,
+    audioPath: audioPath || null,
+    info: "Audio uploaded and saved to /audio. Transcription comes in next step!"
+  });
+  
   console.log("POST /chat hit!", req.body);
 
   const messages = req.body.messages;
@@ -413,5 +465,6 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
