@@ -209,13 +209,6 @@ app.post('/chat', upload.single('audio'), async (req, res) => {
       : req.body.messages;
     userMessage = arr[arr.length - 1]?.content || '';
   }
-
-  return res.json({
-    ok: true,
-    userMessage,
-    audioPath: audioPath || null,
-    info: "Audio uploaded and saved to /audio. Transcription comes in next step!"
-  });
   
   console.log("POST /chat hit!", req.body);
 
@@ -465,6 +458,7 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
