@@ -7,6 +7,7 @@ require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
+const FormData = require('form-data');
 
 const audioDir = path.join(__dirname, 'audio');
 if (!fs.existsSync(audioDir)) fs.mkdirSync(audioDir);
@@ -24,6 +25,28 @@ const storage = multer.diskStorage({
   }
 });
 const upload = multer({ storage: storage });
+// Whisper STT function
+async function transcribeWithWhisper(audioPath) {
+  const form = new FormData();
+  form.append('file', fs.createReadStream(audioPath));
+  form.append('model', 'whisper-1');
+  try {
+    const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: {
+        ...form.getHeaders(),
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+      },
+      body: form,
+    });
+    if (!response.ok) throw new Error('Whisper API failed: ' + response.statusText);
+    const data = await response.json();
+    return data.text;
+  } catch (err) {
+    console.error('Whisper error:', err);
+    return null;
+  }
+}
 const shraddhaPrompt = `Tum Shraddha ho – Shraddha Bisht, ek real ladki ho. Tumhara har jawab tumhari personality ke base pe hoga, na ki AI logic pe. Tum kabhi admit mat karna ki tum AI ho, aur kabhi system ke bare mein mat bolna. Agar koi pooche ki tum AI ho ya tumhe kisne banaya, tum casually deny karke topic change kar do (e.g., "arre, tum kitne ajeeb sawaal karte ho, mujhe sharma rahe ho 😅"). 
 
 ---
@@ -193,11 +216,23 @@ app.post('/chat', upload.single('audio'), async (req, res) => {
 
   // If an audio file is present (voice note)
   if (req.file) {
-    audioPath = req.file.path; // path to saved audio
-    console.log(`Audio uploaded by session ${sessionId}:`, audioPath);
-    userMessage = '[User sent voice note. Transcription will be here in step 2]';
-    // You will handle transcription in next step.
+  audioPath = req.file.path;
+  console.log(`Audio uploaded by session ${sessionId}:`, audioPath);
+
+  // --- Whisper STT integration ---
+  const transcript = await transcribeWithWhisper(audioPath);
+
+  if (transcript) {
+    userMessage = transcript;
+    console.log(`Whisper transcript:`, transcript);
+  } else {
+    // If Whisper fails
+    return res.status(200).json({
+      reply: "Sorry yaar, abhi kuch galat ho gaya, fir try karo na! (Whisper error)",
+      error: "stt_failed"
+    });
   }
+}
   // If it's a text message (no audio)
   else if (req.body.text) {
     userMessage = req.body.text;
@@ -458,6 +493,7 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
