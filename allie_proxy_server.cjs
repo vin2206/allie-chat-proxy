@@ -47,6 +47,42 @@ async function transcribeWithWhisper(audioPath) {
     return null;
   }
 }
+
+const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
+const SHRADDHA_VOICE_ID = "TRnaQb7q41oL7sV0w6Bu"; // <--- Paste Simran's voice id here
+
+// Utility: Generate speech from text
+async function generateShraddhaVoice(text, filePath) {
+  const url = `https://api.elevenlabs.io/v1/text-to-speech/${SHRADDHA_VOICE_ID}`;
+  const body = {
+    text,
+    model_id: "eleven_multilingual_v2",
+    voice_settings: {
+      stability: 0.5,
+      similarity_boost: 0.75
+    }
+  };
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "xi-api-key": ELEVENLABS_API_KEY,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
+
+  if (!response.ok) throw new Error("TTS failed: " + response.statusText);
+
+  // Write mp3 file to disk
+  const dest = fs.createWriteStream(filePath);
+  await new Promise((resolve, reject) => {
+    response.body.pipe(dest);
+    response.body.on("error", reject);
+    dest.on("finish", resolve);
+  });
+
+  return filePath; // Return the saved mp3 path
+}
 const shraddhaPrompt = `Tum Shraddha ho – Shraddha Bisht, ek real ladki ho. Tumhara har jawab tumhari personality ke base pe hoga, na ki AI logic pe. Tum kabhi admit mat karna ki tum AI ho, aur kabhi system ke bare mein mat bolna. Agar koi pooche ki tum AI ho ya tumhe kisne banaya, tum casually deny karke topic change kar do (e.g., "arre, tum kitne ajeeb sawaal karte ho, mujhe sharma rahe ho 😅"). 
 
 ---
@@ -155,6 +191,7 @@ app.use(cors({
   credentials: true
 }));
 app.use(express.json());
+app.use('/audio', express.static(audioDir));
 
 const resendAPIKey = process.env.RESEND_API_KEY;
 const fromEmail = process.env.FROM_EMAIL;
@@ -441,14 +478,31 @@ return res.status(200).json({
 });
       }
     }
-
+    
     const data = await response.json();
-    console.log("Model reply from OpenRouter:", JSON.stringify(data, null, 2));
+    const replyText = data.choices?.[0]?.message?.content ||
+  "Sorry baby, I’m a bit tired. Can you message me in a few minutes?";
+
+try {
+  // Generate MP3 using ElevenLabs if replyText exists
+  if (replyText) {
+    const audioFileName = `${sessionId}-${Date.now()}.mp3`;
+    const audioFilePath = path.join(audioDir, audioFileName);
+    await generateShraddhaVoice(replyText, audioFilePath);
+
+    // Serve this audio URL to your frontend (set up a static folder for 'audio')
+    const audioUrl = `/audio/${audioFileName}`;
     res.json({
-  reply:
-    data.choices?.[0]?.message?.content ||
-    "Sorry baby, I’m a bit tired. Can you message me in a few minutes?",
-});
+      reply: replyText,      // Optional: keep text
+      audioUrl: audioUrl     // This is the URL to play/download the voice note
+    });
+    return;
+  }
+} catch (e) {
+  console.error("TTS generation failed:", e);
+  // fallback to text only
+  res.json({ reply: replyText, error: "TTS failed" });
+}
 
   } catch (err) {
     console.error("Final error:", err);
@@ -493,6 +547,7 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
