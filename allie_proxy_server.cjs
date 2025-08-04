@@ -49,7 +49,7 @@ async function transcribeWithWhisper(audioPath) {
 }
 
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
-const SHRADDHA_VOICE_ID = "TRnaQb7q41oL7sV0w6Bu"; // <--- Paste Simran's voice id here
+const SHRADDHA_VOICE_ID = "heug0qu61IEEc38moVr8"; // <--- Paste Simran's voice id here
 
 // Utility: Generate speech from text
 async function generateShraddhaVoice(text, filePath) {
@@ -547,6 +547,7 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
