@@ -98,28 +98,23 @@ function wantsVoice(userText) {
 function prepHinglishForTTS(text) {
   if (!text) return text;
 
-  // Soft punctuation to guide pauses
   let t = text
     .replace(/\s*,\s*/g, ', ')
     .replace(/\s*\.\s*/g, '. ')
     .replace(/ {2,}/g, ' ')
     .trim();
 
-  // Phonetic nudges
   const repl = [
-    [/Dehradun/gi, 'Dehra-doon'],
+    // removed Dehradun hyphen
     [/tumse/gi, 'tum se'],
     [/baatkarke|baat\s*karke/gi, 'baat kar ke'],
     [/acha/gi, 'accha'],
   ];
   repl.forEach(([a,b]) => t = t.replace(a,b));
 
-  // If too short, pad lightly for rhythm
-  if (t.split(/\s+/).length < 8) {
-    t = `${t} … accha suno, mujhe na tum se baat kar ke accha lagta hai.`;
-  }
+  // Avoid over-stopping on conjunctions
+  t = t.replace(/(\b(?:par|aur|lekin|kyunki)\b)\s*\.\s*/gi, '$1, ');
 
-  // Ensure sentence ends well
   if (!/[.!?…]$/.test(t)) t += '.';
   return t;
 }
@@ -131,9 +126,10 @@ async function generateShraddhaVoice(text, filePath) {
     text,
     model_id: "eleven_multilingual_v2",
     voice_settings: {
-    stability: 0.35,        // less robotic
-    similarity_boost: 0.88  // keep Isha’s identity
-  }
+  stability: 0.55,        // a bit steadier = fewer stretched syllables
+  similarity_boost: 0.80, // still Isha, but lets prosody breathe
+  use_speaker_boost: true // crisper articulation
+}
   };
   const response = await fetch(url, {
     method: "POST",
@@ -642,3 +638,4 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
