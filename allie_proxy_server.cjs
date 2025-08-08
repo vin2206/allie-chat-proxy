@@ -49,7 +49,7 @@ async function transcribeWithWhisper(audioPath) {
 }
 
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
-const SHRADDHA_VOICE_ID = "heug0qu61IEEc38moVr8"; // <--- Paste isha's voice id here
+const SHRADDHA_VOICE_ID = "WnFIhLMD7HtSxjuKKrfY"; // <--- Paste gargi's voice id here
 // -------- Voice usage limits (per session_id, reset daily) --------
 const VOICE_LIMITS = { free: 1, premium: 5 };
 const sessionUsage = new Map(); // sessionId -> { date: 'YYYY-MM-DD', count: 0 }
@@ -128,7 +128,7 @@ async function generateShraddhaVoice(text, filePath) {
     text,
     model_id: "eleven_multilingual_v2",
     voice_settings: {
-  stability: 0.40,        // less monotone, a bit snappier
+  stability: 0.50,        // less monotone, a bit snappier
   similarity_boost: 0.75, // still Isha, but allows livelier cadence
   style: 0.65,            // more expressive = sounds faster
   use_speaker_boost: true
@@ -641,6 +641,7 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
