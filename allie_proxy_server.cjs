@@ -97,12 +97,13 @@ function wantsVoice(userText) {
 // -------- Hinglish prep for TTS (more natural pacing) --------
 function prepHinglishForTTS(text) {
   if (!text) return text;
-
-  let t = text
-    .replace(/\s*,\s*/g, ', ')
-    .replace(/\s*\.\s*/g, '. ')
-    .replace(/ {2,}/g, ' ')
-    .trim();
+// strip fillers up front (so they don't reach TTS)
+  let t = (text || '')
+  .replace(/\b(amm+|um+|hmm+|haan+|huh+)\b/gi, '')
+  .replace(/\s*,\s*/g, ', ')
+  .replace(/\s*\.\s*/g, '. ')
+  .replace(/ {2,}/g, ' ')
+  .trim();
 
   const repl = [
     // removed Dehradun hyphen
@@ -583,7 +584,6 @@ if (triggerVoice && remaining <= 0) {
 if (triggerVoice) {
   const ttsText = prepHinglishForTTS(replyTextRaw);
   try {
-    t = t.replace(/\b(amm+|um+|hmm+|haan+|huh+)\b/gi, '');
     const audioFileName = `${sessionId}-${Date.now()}.mp3`;
     const audioFilePath = path.join(audioDir, audioFileName);
     await generateShraddhaVoice(ttsText, audioFilePath);
@@ -647,6 +647,7 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
