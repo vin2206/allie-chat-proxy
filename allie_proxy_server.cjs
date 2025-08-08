@@ -49,7 +49,80 @@ async function transcribeWithWhisper(audioPath) {
 }
 
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
-const SHRADDHA_VOICE_ID = "heug0qu61IEEc38moVr8"; // <--- Paste Simran's voice id here
+const SHRADDHA_VOICE_ID = "heug0qu61IEEc38moVr8"; // <--- Paste isha's voice id here
+// -------- Voice usage limits (per session_id, reset daily) --------
+const VOICE_LIMITS = { free: 1, premium: 5 };
+const sessionUsage = new Map(); // sessionId -> { date: 'YYYY-MM-DD', count: 0 }
+
+function todayStr() {
+  const d = new Date();
+  return d.toISOString().slice(0,10);
+}
+
+function getUsage(sessionId) {
+  const t = todayStr();
+  const rec = sessionUsage.get(sessionId);
+  if (!rec || rec.date !== t) {
+    const fresh = { date: t, count: 0 };
+    sessionUsage.set(sessionId, fresh);
+    return fresh;
+  }
+  return rec;
+}
+
+function remainingVoice(sessionId, isPremium) {
+  const { count } = getUsage(sessionId);
+  const limit = isPremium ? VOICE_LIMITS.premium : VOICE_LIMITS.free;
+  return Math.max(0, limit - count);
+}
+
+function bumpVoice(sessionId) {
+  const rec = getUsage(sessionId);
+  rec.count += 1;
+  sessionUsage.set(sessionId, rec);
+}
+
+// -------- Voice trigger detection --------
+const VOICE_KEYWORDS = [
+  /voice/i, /audio/i, /awaaz/i, /aawaz/i,
+  /sun[aā]na/i, /bolo/i, /bolna/i, /awaaz bhej/i, /audio bhej/i,
+  /send.*voice/i, /voice.*note/i, /record/i
+];
+
+function wantsVoice(userText) {
+  if (!userText) return false;
+  return VOICE_KEYWORDS.some(rx => rx.test(userText));
+}
+
+// -------- Hinglish prep for TTS (more natural pacing) --------
+function prepHinglishForTTS(text) {
+  if (!text) return text;
+
+  // Soft punctuation to guide pauses
+  let t = text
+    .replace(/\s*,\s*/g, ', ')
+    .replace(/\s*\.\s*/g, '. ')
+    .replace(/ {2,}/g, ' ')
+    .trim();
+
+  // Phonetic nudges
+  const repl = [
+    [/Dehradun/gi, 'Dehra-doon'],
+    [/tumse/gi, 'tum se'],
+    [/baatkarke|baat\s*karke/gi, 'baat kar ke'],
+    [/acha/gi, 'accha'],
+  ];
+  repl.forEach(([a,b]) => t = t.replace(a,b));
+
+  // If too short, pad lightly for rhythm
+  if (t.split(/\s+/).length < 8) {
+    t = `${t} … accha suno, mujhe na tum se baat kar ke accha lagta hai.`;
+  }
+
+  // Ensure sentence ends well
+  if (!/[.!?…]$/.test(t)) t += '.';
+  return t;
+}
 
 // Utility: Generate speech from text
 async function generateShraddhaVoice(text, filePath) {
@@ -58,9 +131,9 @@ async function generateShraddhaVoice(text, filePath) {
     text,
     model_id: "eleven_multilingual_v2",
     voice_settings: {
-      stability: 0.5,
-      similarity_boost: 0.75
-    }
+    stability: 0.35,        // less robotic
+    similarity_boost: 0.88  // keep Isha’s identity
+  }
   };
   const response = await fetch(url, {
     method: "POST",
@@ -480,29 +553,51 @@ return res.status(200).json({
     }
     
     const data = await response.json();
-    const replyText = data.choices?.[0]?.message?.content ||
+
+const replyTextRaw =
+  data.choices?.[0]?.message?.content ||
   "Sorry baby, I’m a bit tired. Can you message me in a few minutes?";
 
-try {
-  // Generate MP3 using ElevenLabs if replyText exists
-  if (replyText) {
+// ---------- VOICE OR TEXT DECISION ----------
+const userTextJustSent = userMessage || '';          // from earlier parsing at top of handler
+const userAskedVoice = wantsVoice(userTextJustSent); // keyword trigger
+const userSentAudio = !!req.file;                    // audio upload trigger
+const triggerVoice = userAskedVoice || userSentAudio;
+
+// use the existing isPremium you already set above
+const remaining = remainingVoice(sessionId, isPremium);
+
+// If user requested voice but limit over, send polite text fallback
+if (triggerVoice && remaining <= 0) {
+  return res.json({
+    reply:
+      "Suno… abhi koi paas hai isliye voice nahi bhej sakti, baad mein pakka bhejungi. Filhaal text se baat karti hoon. 💛"
+  });
+}
+
+// If voice is triggered and allowed, return ONLY audio
+if (triggerVoice) {
+  const ttsText = prepHinglishForTTS(replyTextRaw);
+  try {
     const audioFileName = `${sessionId}-${Date.now()}.mp3`;
     const audioFilePath = path.join(audioDir, audioFileName);
-    await generateShraddhaVoice(replyText, audioFilePath);
+    await generateShraddhaVoice(ttsText, audioFilePath);
+    bumpVoice(sessionId); // consume one quota
 
-    // Serve this audio URL to your frontend (set up a static folder for 'audio')
     const audioUrl = `/audio/${audioFileName}`;
-    res.json({
-      reply: replyText,      // Optional: keep text
-      audioUrl: audioUrl     // This is the URL to play/download the voice note
+    return res.json({ audioUrl }); // one-of contract: audio only
+  } catch (e) {
+    console.error("TTS generation failed:", e);
+    return res.json({
+      reply: "Oops… voice mein thoda issue aa gaya. Text se hi batati hoon: " + replyTextRaw
     });
-    return;
   }
-} catch (e) {
-  console.error("TTS generation failed:", e);
-  // fallback to text only
-  res.json({ reply: replyText, error: "TTS failed" });
 }
+
+// Otherwise, plain text response
+return res.json({ reply: replyTextRaw });
+    
+  "Sorry baby, I’m a bit tired. Can you message me in a few minutes?";
 
   } catch (err) {
     console.error("Final error:", err);
@@ -547,11 +642,3 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-
-
-
-
-
-
-
-
