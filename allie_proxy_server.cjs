@@ -126,9 +126,10 @@ async function generateShraddhaVoice(text, filePath) {
     text,
     model_id: "eleven_multilingual_v2",
     voice_settings: {
-  stability: 0.55,        // a bit steadier = fewer stretched syllables
-  similarity_boost: 0.80, // still Isha, but lets prosody breathe
-  use_speaker_boost: true // crisper articulation
+  stability: 0.45,        // less monotone, a bit snappier
+  similarity_boost: 0.78, // still Isha, but allows livelier cadence
+  style: 0.65,            // more expressive = sounds faster
+  use_speaker_boost: true
 }
   };
   const response = await fetch(url, {
@@ -638,4 +639,5 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
