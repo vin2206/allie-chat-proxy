@@ -114,6 +114,8 @@ function prepHinglishForTTS(text) {
 
   // Avoid over-stopping on conjunctions
   t = t.replace(/(\b(?:par|aur|lekin|kyunki)\b)\s*\.\s*/gi, '$1, ');
+  // Convert mid‑sentence full stops to commas (keeps flow faster)
+  t = t.replace(/([a-z])\.\s+/gi, '$1, ');
 
   if (!/[.!?…]$/.test(t)) t += '.';
   return t;
@@ -126,8 +128,8 @@ async function generateShraddhaVoice(text, filePath) {
     text,
     model_id: "eleven_multilingual_v2",
     voice_settings: {
-  stability: 0.45,        // less monotone, a bit snappier
-  similarity_boost: 0.78, // still Isha, but allows livelier cadence
+  stability: 0.40,        // less monotone, a bit snappier
+  similarity_boost: 0.75, // still Isha, but allows livelier cadence
   style: 0.65,            // more expressive = sounds faster
   use_speaker_boost: true
 }
@@ -639,5 +641,6 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
