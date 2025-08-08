@@ -113,11 +113,16 @@ function prepHinglishForTTS(text) {
   repl.forEach(([a,b]) => t = t.replace(a,b));
 
   // Avoid over-stopping on conjunctions
-  t = t.replace(/(\b(?:par|aur|lekin|kyunki)\b)\s*\.\s*/gi, '$1, ');
-  // Convert mid‑sentence full stops to commas (keeps flow faster)
-  t = t.replace(/([a-z])\.\s+/gi, '$1, ');
+t = t.replace(/\b(?:par|aur|lekin|kyunki)\b\s*\.\s*/gi, '$1, ');
 
-  if (!/[.!?…]$/.test(t)) t += '.';
+// Merge short sentences into longer ones for faster flow
+t = t.replace(/([a-z])\.\s+([a-z])/gi, '$1, $2');
+
+// Reduce heavy pauses at most sentence ends
+t = t.replace(/([a-z])\.\s+/gi, '$1, ');
+
+// Make sure final sentence ends properly
+if (!/[.!?…]$/.test(t)) t += '.';
   return t;
 }
 
@@ -128,9 +133,9 @@ async function generateShraddhaVoice(text, filePath) {
     text,
     model_id: "eleven_multilingual_v2",
     voice_settings: {
-  stability: 0.50,        // less monotone, a bit snappier
-  similarity_boost: 0.75, // still Isha, but allows livelier cadence
-  style: 0.65,            // more expressive = sounds faster
+  stability: 0.60,        // less monotone, a bit snappier
+  similarity_boost: 0.80, // still Isha, but allows livelier cadence
+  style: 0.55,            // more expressive = sounds faster
   use_speaker_boost: true
 }
   };
@@ -578,6 +583,7 @@ if (triggerVoice && remaining <= 0) {
 if (triggerVoice) {
   const ttsText = prepHinglishForTTS(replyTextRaw);
   try {
+    t = t.replace(/\b(amm+|um+|hmm+|haan+|huh+)\b/gi, '');
     const audioFileName = `${sessionId}-${Date.now()}.mp3`;
     const audioFilePath = path.join(audioDir, audioFileName);
     await generateShraddhaVoice(ttsText, audioFilePath);
@@ -641,6 +647,7 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
