@@ -114,7 +114,7 @@ function prepHinglishForTTS(text) {
   repl.forEach(([a,b]) => t = t.replace(a,b));
 
   // Avoid over-stopping on conjunctions
-t = t.replace(/\b(?:par|aur|lekin|kyunki)\b\s*\.\s*/gi, '$1, ');
+t = t.replace(/\b(?:par|aur|lekin|kyunki)\b\s*\.\s*/gi, ', ');
 
 // Merge short sentences into longer ones for faster flow
 t = t.replace(/([a-z])\.\s+([a-z])/gi, '$1, $2');
@@ -125,6 +125,44 @@ t = t.replace(/([a-z])\.\s+/gi, '$1, ');
 // Make sure final sentence ends properly
 if (!/[.!?…]$/.test(t)) t += '.';
   return t;
+}
+// --- Translate Hinglish to Hindi for TTS (via OpenRouter) ---
+async function translateToHindi(text) {
+  if (!text) return null;
+
+  try {
+    const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "google/gemma-2-9b-it",
+        temperature: 0.2,
+        max_tokens: 600,
+        messages: [
+          { role: "system",
+            content: "You are a precise translator. Convert mixed Hindi+English (Hinglish, Latin script) into NATURAL Hindi in Devanagari, preserving meaning, tone and emojis. Do not add explanations—output only the translated sentence." },
+          { role: "user", content: text }
+        ]
+      })
+    });
+
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    const out = data?.choices?.[0]?.message?.content?.trim();
+    if (!out) return null;
+
+    // sanity: if model returned English or same text, skip using it
+    const looksHindi = /[\u0900-\u097F]/.test(out);
+    if (!looksHindi) return null;
+
+    return out;
+  } catch (e) {
+    console.error("translateToHindi failed:", e);
+    return null;
+  }
 }
 
 // Utility: Generate speech from text
@@ -563,11 +601,11 @@ const replyTextRaw =
   data.choices?.[0]?.message?.content ||
   "Sorry baby, I’m a bit tired. Can you message me in a few minutes?";
 
-// ---------- VOICE OR TEXT DECISION ----------
-const userTextJustSent = userMessage || '';          // from earlier parsing at top of handler
-const userAskedVoice = wantsVoice(userTextJustSent); // keyword trigger
-const userSentAudio = !!req.file;                    // audio upload trigger
-const triggerVoice = userAskedVoice || userSentAudio;
+// --------- VOICE OR TEXT DECISION ---------
+const userTextJustSent = userMessage || '';          // parsed at top of handler
+const userAskedVoice   = wantsVoice(userTextJustSent);
+const userSentAudio    = !!req.file;
+const triggerVoice     = userAskedVoice || userSentAudio;
 
 // use the existing isPremium you already set above
 const remaining = remainingVoice(sessionId, isPremium);
@@ -575,14 +613,22 @@ const remaining = remainingVoice(sessionId, isPremium);
 // If user requested voice but limit over, send polite text fallback
 if (triggerVoice && remaining <= 0) {
   return res.json({
-    reply:
-      "Suno… abhi koi paas hai isliye voice nahi bhej sakti, baad mein pakka bhejungi. Filhaal text se baat karti hoon. 💛"
+    reply: "Suno… abhi koi paas hai isliye voice nahi bhej sakti, baad mein pakka bhejungi. Filhaal text se baat karti hoon. 💛"
   });
 }
 
-// If voice is triggered and allowed, return ONLY audio
 if (triggerVoice) {
-  const ttsText = prepHinglishForTTS(replyTextRaw);
+  // 1) Try to get a clean Hindi version for TTS (sounds more natural)
+  let ttsText = await translateToHindi(replyTextRaw);
+
+  // 2) Fallback to Hinglish prosody prep if translation not available
+  if (!ttsText) {
+    ttsText = prepHinglishForTTS(replyTextRaw);
+  }
+
+  // 3) Strip fillers that sound odd in audio
+  ttsText = (ttsText || "").replace(/\b(amm|um+|hmm+|haan+|huh+)\b/gi, "").replace(/\s{2,}/g, " ").trim();
+
   try {
     const audioFileName = `${sessionId}-${Date.now()}.mp3`;
     const audioFilePath = path.join(audioDir, audioFileName);
@@ -590,7 +636,7 @@ if (triggerVoice) {
     bumpVoice(sessionId); // consume one quota
 
     const audioUrl = `/audio/${audioFileName}`;
-    return res.json({ audioUrl }); // one-of contract: audio only
+    return res.json({ audioUrl }); // audio-only response
   } catch (e) {
     console.error("TTS generation failed:", e);
     return res.json({
@@ -647,6 +693,7 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
