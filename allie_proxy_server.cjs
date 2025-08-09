@@ -422,7 +422,7 @@ const lastPauseIdx = safeMessages
 
 let phaseReplyCount = 0;
 if (typeof lastPauseIdx !== 'undefined' && lastPauseIdx !== -1) {
-  phaseReplyCount = messages.slice(lastPauseIdx + 1).filter(m => m.role === "assistant").length;
+  phaseReplyCount = safeMessages.slice(lastPauseIdx + 1).filter(m => m.role === "assistant").length;
 } else {
   phaseReplyCount = userReplyCount;
 }
@@ -461,11 +461,6 @@ let dateInstruction = "";
 if (req.body.clientDate) {
   dateInstruction = `\n\n### 📅 DATE AWARENESS\nAaj ki tareekh: ${req.body.clientDate}. Jab bhi koi baat ya sawal year/month/date se related ho toh current date/tareekh ke hisaab se jawab dena. Aaj 2025 hai, purani ya galat date mat bolna!`;
 }
-  
-messages.unshift({
-  role: "system",
-  content: shraddhaPrompt + "\n\n### CURRENT BEHAVIOR\n" + personalityStage + timeInstruction + dateInstruction
-});
 
 let isPremium = req.body.isPremium || false;
 if (req.body.ownerKey === "unlockvinay1236") {
@@ -526,7 +521,7 @@ if (!isPremium && userReplyCount >= 10) {
     ? shraddhaPrompt + "\n\n### CURRENT BEHAVIOR\n" + personalityStage
     : "You are a girl who replies sweetly in a simple friendly tone."
     },
-    ...safemessages
+    ...safeMessages
   ],                                                                                                                                                                                                                                    
       temperature: 0.8,
       max_tokens: 512
@@ -550,7 +545,7 @@ if (userReplyCount === 25 || userReplyCount === 45) {
     const primaryModel = "anthropic/claude-3.7-sonnet";
 const fallbackModel = "mistralai/mistral-small-3";
 
-    let response = await fetchFromModel(primaryModel, messages);
+    let response = await fetchFromModel(primaryModel, safeMessages);
 
     if (!response.ok) {
       console.log("Primary model failed, switching to fallback...");
@@ -564,7 +559,7 @@ const fallbackModel = "mistralai/mistral-small-3";
         })
       });
 
-      response = await fetchFromModel(fallbackModel, messages);
+      response = await fetchFromModel(fallbackModel, safeMessages);
 
       if (!response.ok) {
         await fetch(`${process.env.SERVER_URL}/report-error`, {
@@ -702,12 +697,3 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-
-
-
-
-
-
-
-
-
