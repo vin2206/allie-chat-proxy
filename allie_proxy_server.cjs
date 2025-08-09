@@ -401,12 +401,22 @@ app.post('/chat', upload.single('audio'), async (req, res) => {
   console.log("POST /chat hit!", req.body);
 
   const messages = req.body.messages || [];
-const userReplyCount = Array.isArray(messages)
-  ? messages.filter(m => m.role === "assistant").length
-  : 0;
+const norm = (arr) => (Array.isArray(arr) ? arr : []).map(m => ({
+  ...m,
+  content: typeof m?.content === "string" ? m.content : (m?.audioUrl ? "[voice note]" : "")
+}));
+const safeMessages = norm(messages);
 
-const lastPauseIdx = messages
-  .map((m, idx) => m.role === "assistant" && m.content.includes("5 minute mein aati hoon") ? idx : -1)
+const userReplyCount = safeMessages.filter(m => m.role === "assistant").length;
+
+const lastPauseIdx = safeMessages
+  .map((m, idx) =>
+    m?.role === "assistant" &&
+    typeof m?.content === "string" &&
+    m.content.includes("5 minute mein aati hoon")
+      ? idx
+      : -1
+  )
   .filter(idx => idx !== -1)
   .pop();
 
@@ -516,7 +526,7 @@ if (!isPremium && userReplyCount >= 10) {
     ? shraddhaPrompt + "\n\n### CURRENT BEHAVIOR\n" + personalityStage
     : "You are a girl who replies sweetly in a simple friendly tone."
     },
-    ...messages
+    ...safemessages
   ],                                                                                                                                                                                                                                    
       temperature: 0.8,
       max_tokens: 512
@@ -527,7 +537,7 @@ if (!isPremium && userReplyCount >= 10) {
   try {
 
     // ------------------ Pause After 25 Replies ------------------
-const userReplyCount = messages.filter(m => m.role === "assistant").length;
+const userReplyCount = safeMessages.filter(m => m.role === "assistant").length;
 
 if (userReplyCount === 25 || userReplyCount === 45) {
   console.log("Pausing for 5 minutes before resuming...");
@@ -648,8 +658,6 @@ const audioUrl = `${base}/audio/${audioFileName}`;
 
 // Otherwise, plain text response
 return res.json({ reply: replyTextRaw });
-    
-  "Sorry baby, I’m a bit tired. Can you message me in a few minutes?";
 
   } catch (err) {
     console.error("Final error:", err);
@@ -694,6 +702,7 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
