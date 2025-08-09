@@ -381,9 +381,9 @@ app.post('/chat', upload.single('audio'), async (req, res) => {
   } else {
     // If Whisper fails
     return res.status(200).json({
-      reply: "Sorry yaar, abhi kuch galat ho gaya, fir try karo na! (Whisper error)",
-      error: "stt_failed"
-    });
+  reply: "Sorry yaar, samjhi nhi kya kha tumne, firse bolo na! 💛",
+  error: "stt_failed"
+});
   }
 }
   // If it's a text message (no audio)
@@ -635,7 +635,8 @@ if (triggerVoice) {
     await generateShraddhaVoice(ttsText, audioFilePath);
     bumpVoice(sessionId); // consume one quota
 
-    const audioUrl = `/audio/${audioFileName}`;
+    const base = process.env.SERVER_URL || "https://allie-chat-proxy-production.up.railway.app";
+const audioUrl = `${base}/audio/${audioFileName}`;
     return res.json({ audioUrl }); // audio-only response
   } catch (e) {
     console.error("TTS generation failed:", e);
@@ -693,6 +694,7 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
