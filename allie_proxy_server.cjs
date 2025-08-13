@@ -574,11 +574,13 @@ const fallbackModel = "mistralai/mistral-small-3";
         });
 
         try {
-  await axios.post(process.env.SERVER_URL, {
-    type: "error",
-    source: "allie",
-    message: "Allie failed to respond"
-  });
+  if (process.env.ALERT_WEBHOOK) {
+    await axios.post(process.env.ALERT_WEBHOOK, {
+      type: "error",
+      source: "allie",
+      message: "Allie failed to respond"
+    });
+  }
 } catch (e) {
   console.error("Failed to trigger alert webhook", e);
 }
@@ -609,7 +611,7 @@ const replyTextRaw =
 
 // --------- VOICE OR TEXT DECISION ---------
 const userTextJustSent = userMessage || '';          // parsed at top of handler
-const userAskedVoice   = wantsVoice(userTextJustSent);
+const userAskedVoice   = wantsVoice(userTextJustSent) || !!req.body.wantVoice;
 const userSentAudio    = !!req.file;
 const triggerVoice     = userAskedVoice || userSentAudio;
 
@@ -641,8 +643,8 @@ if (triggerVoice) {
     await generateShraddhaVoice(ttsText, audioFilePath);
     bumpVoice(sessionId); // consume one quota
 
-    const base = process.env.SERVER_URL || "https://allie-chat-proxy-production.up.railway.app";
-const audioUrl = `${base}/audio/${audioFileName}`;
+    const hostBase = process.env.SERVER_URL || `https://${req.headers.host}`;
+const audioUrl = `${hostBase}/audio/${audioFileName}`;
     return res.json({ audioUrl }); // audio-only response
   } catch (e) {
     console.error("TTS generation failed:", e);
@@ -698,5 +700,6 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
