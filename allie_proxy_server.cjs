@@ -84,9 +84,12 @@ function bumpVoice(sessionId) {
 
 // -------- Voice trigger detection --------
 const VOICE_KEYWORDS = [
-  /voice/i, /audio/i, /awaaz/i, /aawaz/i,
-  /sun[aā]na/i, /bolo/i, /bolna/i, /awaaz bhej/i, /audio bhej/i,
-  /send.*voice/i, /voice.*note/i, /record/i
+  /voice/i, /audio/i,
+  /awaz/i, /aawaj/i, /awaz/i, /avaaz/i, /avaz/i, /avaj/i,     // ← add common spellings
+  /sun[aā]?na/i, /sun[aā]?o/i,
+  /(awaaz|awaz|avaz).*bhej/i, /audio.*bhej/i,
+  /send.*(voice|audio)/i, /(voice|audio).*(note|msg)/i,
+  /record/i
 ];
 
 function wantsVoice(userText) {
@@ -298,16 +301,14 @@ const shraddhaPrompt = `Tum Shraddha ho – Shraddha Bisht, ek real ladki ho. Tu
 
 
 const app = express();
-app.use(cors({
-  origin: [
-    'https://allie-chat-app-git-main-vinay-sajwans-projects.vercel.app',
-    'https://allie-chat-d9g7ehg0r-vinay-sajwans-projects.vercel.app'
-  ],
-  methods: ['GET', 'POST'],
-  credentials: true
-}));
+const ALLOWED_ORIGINS = [
+  'https://sajwans-projects.vercel.app',                                    // ← production
+  'https://allie-chat-app-git-main-vinay-sajwans-projects.vercel.app',      // previews
+  'https://allie-chat-d9g7ehg0r-vinay-sajwans-projects.vercel.app'
+];
+app.use(cors({ origin: (o, cb) => cb(null, !o || ALLOWED_ORIGINS.includes(o)), methods: ['GET','POST'] }));
 app.use(express.json());
-app.use('/audio', express.static(audioDir));
+app.use('/audio', cors(), express.static(audioDir));   // ensure CORS headers on mp3
 
 const resendAPIKey = process.env.RESEND_API_KEY;
 const fromEmail = process.env.FROM_EMAIL;
@@ -697,4 +698,5 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
