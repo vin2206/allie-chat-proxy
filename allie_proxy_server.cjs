@@ -85,9 +85,9 @@ function bumpVoice(sessionId) {
 // -------- Voice trigger detection --------
 const VOICE_KEYWORDS = [
   /voice/i, /audio/i,
-  /awaz/i, /aawaj/i, /awaz/i, /avaaz/i, /avaz/i, /avaj/i,     // ← add common spellings
-  /sun[aā]?na/i, /sun[aā]?o/i,
-  /(awaaz|awaz|avaz).*bhej/i, /audio.*bhej/i,
+  /awaaz/i, /aawaz/i, /awaz/i, /avaaz/i, /avaz/i,
+  /sun[aā]?na/i, /sun[aā]?o/i, /bolna/i, /bolo/i, /bolke/i,
+  /(awaaz|aawaz|awaz|avaaz|avaz).*bhej/i, /audio.*bhej/i,
   /send.*(voice|audio)/i, /(voice|audio).*(note|msg)/i,
   /record/i
 ];
@@ -517,10 +517,7 @@ if (!isPremium && userReplyCount >= 10) {
      messages: [
   {
    role: "system",
-   content:
-  (modelName === "anthropic/claude-3.7-sonnet")
-    ? shraddhaPrompt + "\n\n### CURRENT BEHAVIOR\n" + personalityStage
-    : "You are a girl who replies sweetly in a simple friendly tone."
+   content: shraddhaPrompt + "\n\n### CURRENT BEHAVIOR\n" + personalityStage
     },
     ...safeMessages
   ],                                                                                                                                                                                                                                    
@@ -700,6 +697,7 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
