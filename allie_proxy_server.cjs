@@ -83,18 +83,12 @@ function bumpVoice(sessionId) {
 }
 
 // -------- Voice trigger detection --------
-const VOICE_KEYWORDS = [
-  /voice/i, /audio/i,
-  /awaaz/i, /aawaz/i, /awaz/i, /avaaz/i, /avaz/i,
-  /sun[aā]?na/i, /sun[aā]?o/i, /bolna/i, /bolo/i, /bolke/i,
-  /(awaaz|aawaz|awaz|avaaz|avaz).*bhej/i, /audio.*bhej/i,
-  /send.*(voice|audio)/i, /(voice|audio).*(note|msg)/i,
-  /record/i
-];
+const VOICE_NOUN = /(voice|audio|a+w?a+a?j|a+w?a+a?z|awaaz|awaz|avaaz|avaj|awaj)/i;
+const VOICE_VERB = /(bhej(?:o|do)?|send|suna(?:o|do)?|bol(?:o|kar)?)/i;
 
-function wantsVoice(userText) {
-  if (!userText) return false;
-  return VOICE_KEYWORDS.some(rx => rx.test(userText));
+function wantsVoice(userText = "") {
+  const t = String(userText || "").toLowerCase();
+  return VOICE_NOUN.test(t) && VOICE_VERB.test(t);
 }
 
 // -------- Hinglish prep for TTS (more natural pacing) --------
@@ -696,6 +690,7 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
