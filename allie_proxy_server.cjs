@@ -607,10 +607,9 @@ const replyTextRaw =
   "Sorry baby, I’m a bit tired. Can you message me in a few minutes?";
 
 // --------- VOICE OR TEXT DECISION ---------
-const userTextJustSent = userMessage || '';          // parsed at top of handler
-const userAskedVoice   = wantsVoice(userTextJustSent) || !!req.body.wantVoice;
-const userSentAudio    = !!req.file;
-const triggerVoice     = userAskedVoice || userSentAudio;
+const userAskedVoice = !!req.body.wantVoice;  // trust the client flag
+const userSentAudio  = !!req.file;            // user uploaded audio
+const triggerVoice   = userAskedVoice || userSentAudio;
 
 // use the existing isPremium you already set above
 const remaining = remainingVoice(sessionId, isPremium);
@@ -697,6 +696,7 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
