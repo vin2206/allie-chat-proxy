@@ -394,6 +394,8 @@ app.post('/chat', upload.single('audio'), async (req, res) => {
   }
   
   console.log("POST /chat hit!", req.body);
+  // --- normalize latest user text once for voice trigger check ---
+  const userTextJustSent = (userMessage || "").toLowerCase().replace(/\s+/g, " ");
 
   const messages = req.body.messages || [];
 const norm = (arr) => (Array.isArray(arr) ? arr : []).map(m => ({
@@ -599,11 +601,23 @@ return res.status(200).json({
 const replyTextRaw =
   data.choices?.[0]?.message?.content ||
   "Sorry baby, I’m a bit tired. Can you message me in a few minutes?";
+    // If the model typed a placeholder like "[voice note]" or "<voice>", detect it
+const modelPlaceholder = /\[?\s*voice\s*note\s*\]?$/i.test(replyTextRaw.trim()) ||
+                         /<\s*(voice|audio)\s*>/i.test(replyTextRaw);
+
+// If model hinted at voice, treat it as a voice request too
 
 // --------- VOICE OR TEXT DECISION ---------
-const userAskedVoice = !!req.body.wantVoice;  // trust the client flag
-const userSentAudio  = !!req.file;            // user uploaded audio
-const triggerVoice   = userAskedVoice || userSentAudio;
+// --------- VOICE OR TEXT DECISION ---------
+// (userTextJustSent was created right after the big console.log)
+const userAskedVoice = wantsVoice(userTextJustSent) || !!req.body.wantVoice;
+const userSentAudio  = !!req.file;
+
+// Only trigger voice when:
+// 1) user actually asked (verb+noun match), OR
+// 2) user sent an audio note, OR
+// 3) model explicitly put a placeholder like [voice note]
+let triggerVoice = userSentAudio || userAskedVoice || modelPlaceholder;
 
 // use the existing isPremium you already set above
 const remaining = remainingVoice(sessionId, isPremium);
@@ -616,16 +630,15 @@ if (triggerVoice && remaining <= 0) {
 }
 
 if (triggerVoice) {
-  // 1) Try to get a clean Hindi version for TTS (sounds more natural)
-  let ttsText = await translateToHindi(replyTextRaw);
+  // If model wrote just a placeholder or too-short text, speak a friendly line instead
+let base = replyTextRaw?.trim() || "";
+if (modelPlaceholder || base.length < 6) {
+  base = "Thik hai, yeh meri awaaz hai… tum kahan se ho? 😊";
+}
 
-  // 2) Fallback to Hinglish prosody prep if translation not available
-  if (!ttsText) {
-    ttsText = prepHinglishForTTS(replyTextRaw);
-  }
-
-  // 3) Strip fillers that sound odd in audio
-  ttsText = (ttsText || "").replace(/\b(amm|um+|hmm+|haan+|huh+)\b/gi, "").replace(/\s{2,}/g, " ").trim();
+let ttsText = await translateToHindi(base);
+if (!ttsText) ttsText = prepHinglishForTTS(base);
+ttsText = (ttsText || "").replace(/\b(amm|um+|hmm+|haan+|huh+)\b/gi, "").replace(/\s{2,}/g, " ").trim();
 
   try {
     const audioFileName = `${sessionId}-${Date.now()}.mp3`;
@@ -645,7 +658,8 @@ const audioUrl = `${hostBase}/audio/${audioFileName}`;
 }
 
 // Otherwise, plain text response
-return res.json({ reply: replyTextRaw });
+const safeReply = modelPlaceholder ? "🔊 (voice reply)" : replyTextRaw;
+return res.json({ reply: safeReply });
 
   } catch (err) {
     console.error("Final error:", err);
@@ -690,6 +704,7 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
