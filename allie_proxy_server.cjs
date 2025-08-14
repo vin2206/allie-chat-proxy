@@ -403,6 +403,11 @@ const norm = (arr) => (Array.isArray(arr) ? arr : []).map(m => ({
   content: typeof m?.content === "string" ? m.content : (m?.audioUrl ? "[voice note]" : "")
 }));
 const safeMessages = norm(messages);
+  // If this request included audio and we have a Whisper transcript,
+// push it as the latest user message so the model replies to it.
+if (req.file && userMessage) {
+  safeMessages.push({ role: 'user', content: userMessage });
+}
 
 const userReplyCount = safeMessages.filter(m => m.role === "assistant").length;
 
@@ -704,6 +709,7 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
