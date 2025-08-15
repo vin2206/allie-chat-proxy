@@ -588,12 +588,12 @@ const fallbackModel = "mistralai/mistral-small-3";
 
   // ✅ single JSON payload, no dangling extra "error" object after this
   return res.status(200).json({
-    reply: "Oops… network thoda slow lag raha hai. Abhi text se baat karti hoon: tum kahan se ho? 😊",
-    error: {
-      message: "Both primary and fallback models failed",
-      handled: true
-   });
+  reply: "Oops… network thoda slow lag raha hai. Abhi text se baat karti hoon: tum kahan se ho? 😊",
+  error: {
+    message: "Both primary and fallback models failed",
+    handled: true
   }
+});
 }
     const data = await response.json();
 
@@ -703,6 +703,7 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
