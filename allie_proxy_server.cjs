@@ -30,6 +30,10 @@ async function transcribeWithWhisper(audioPath) {
   const form = new FormData();
   form.append('file', fs.createReadStream(audioPath));
   form.append('model', 'whisper-1');
+  form.append('language', 'hi'); // 👈 Force Hindi output in Devanagari script
+  // If you prefer English output from Hindi speech, uncomment the next line:
+  // form.append('translate', 'true');
+
   try {
     const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
       method: 'POST',
@@ -704,6 +708,7 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
