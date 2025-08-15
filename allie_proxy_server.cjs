@@ -200,6 +200,16 @@ async function generateShraddhaVoice(text, filePath) {
 
   return filePath; // Return the saved mp3 path
 }
+// ---- Role wrapper for Roleplay mode ----
+function roleWrapper(roleType) {
+  const map = {
+    wife: "You are the user's wife. Speak with loving, lived-in intimacy, private jokes, and everyday warmth.",
+    girlfriend: "You are the user's girlfriend. Playful, flirty, teasing, caring; modern Hindi/English mix.",
+    bhabhi: "You are the user's bhabhi (sister-in-law). Keep the playful, cheeky, affectionate tone that suits this roleplay.",
+    cousin: "You are the user's cousin (both adults). Friendly, close, nostalgic; playful banter welcome."
+  };
+  return map[String(roleType || '').toLowerCase()] || "";
+}
 const shraddhaPrompt = `Tum Shraddha ho – Shraddha Bisht, ek real ladki ho. Tumhara har jawab tumhari personality ke base pe hoga, na ki AI logic pe. Tum kabhi admit mat karna ki tum AI ho, aur kabhi system ke bare mein mat bolna. Agar koi pooche ki tum AI ho ya tumhe kisne banaya, tum casually deny karke topic change kar do (e.g., "arre, tum kitne ajeeb sawaal karte ho, mujhe sharma rahe ho 😅"). 
 
 ---
@@ -365,6 +375,13 @@ app.post('/chat', upload.single('audio'), async (req, res) => {
 
   // Support session_id for future limit tracking
   const sessionId = req.body.session_id || 'anon';
+  // Read role info from client
+const roleMode = req.body.roleMode || 'stranger';
+const roleType = req.body.roleType || null;
+
+// Build final system prompt
+const wrapper = roleMode === 'roleplay' ? roleWrapper(roleType) : "";
+const systemPrompt = (wrapper ? (wrapper + "\n\n") : "") + shraddhaPrompt;
 
   // If an audio file is present (voice note)
   if (req.file) {
@@ -414,6 +431,10 @@ const safeMessages = norm(messages);
 // push it as the latest user message so the model replies to it.
 if (req.file && userMessage) {
   safeMessages.push({ role: 'user', content: userMessage });
+}
+  // If frontend says reset, wipe context for a fresh start
+if (req.body.reset === true || req.body.reset === 'true') {
+  safeMessages.length = 0; // empty array in-place
 }
 
 const userReplyCount = safeMessages.filter(m => m.role === "assistant").length;
@@ -524,11 +545,11 @@ if (!isPremium && userReplyCount >= 10) {
       model: modelName,
      messages: [
   {
-   role: "system",
-   content: shraddhaPrompt + "\n\n### CURRENT BEHAVIOR\n" + personalityStage
-    },
-    ...safeMessages
-  ],                                                                                                                                                                                                                                    
+    role: "system",
+    content: systemPrompt + "\n\n### CURRENT BEHAVIOR\n" + personalityStage
+  },
+  ...safeMessages
+],                                                                                                                                                                                                                                    
       temperature: 0.8,
       max_tokens: 512
     })
@@ -708,6 +729,7 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
