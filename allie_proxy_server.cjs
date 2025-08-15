@@ -397,7 +397,10 @@ app.post('/chat', upload.single('audio'), async (req, res) => {
   // --- normalize latest user text once for voice trigger check ---
   const userTextJustSent = (userMessage || "").toLowerCase().replace(/\s+/g, " ");
 
-  const messages = req.body.messages || [];
+  let messages = req.body.messages || [];
+if (typeof messages === 'string') {
+  try { messages = JSON.parse(messages); } catch { messages = []; }
+}
 const norm = (arr) => (Array.isArray(arr) ? arr : []).map(m => ({
   ...m,
   content: typeof m?.content === "string" ? m.content : (m?.audioUrl ? "[voice note]" : "")
@@ -584,15 +587,12 @@ const fallbackModel = "mistralai/mistral-small-3";
 }
 
 return res.status(200).json({
-  choices: [
-    {
-      message: {
-        role: "assistant",
-        content: "Oops, my phone is buzzing... can you give me a few minutes? I'll be right back. ❤️"
-      },
-      finish_reason: "fallback_error"
+    reply: "Oops… network thoda slow lag raha hai. Abhi text se baat karti hoon: tum kahan se ho? 😊",
+    error: {
+      message: "Both primary and fallback models failed",
+      handled: true
     }
-  ],
+  });
   error: {
     message: "Both primary and fallback models failed",
     handled: true
@@ -709,6 +709,7 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
