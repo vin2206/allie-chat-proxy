@@ -564,36 +564,38 @@ const fallbackModel = "mistralai/mistral-small-3";
       response = await fetchFromModel(fallbackModel, safeMessages);
 
       if (!response.ok) {
-  await fetch(`${process.env.SERVER_URL}/report-error`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      error: { message: "Fallback model also failed" },
-      location: "/chat route",
-      details: "Both models failed"
-    })
-  });
+        await fetch(`${process.env.SERVER_URL}/report-error`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            error: { message: "Fallback model also failed" },
+            location: "/chat route",
+            details: "Both models failed"
+          })
+        });
 
-  try {
-    if (process.env.ALERT_WEBHOOK) {
-      await axios.post(process.env.ALERT_WEBHOOK, {
-        type: "error",
-        source: "allie",
-        message: "Allie failed to respond"
-      });
-    }
-  } catch (e) {
-    console.error("Failed to trigger alert webhook", e);
-  }
+        try {
+          if (process.env.ALERT_WEBHOOK) {
+            await axios.post(process.env.ALERT_WEBHOOK, {
+              type: "error",
+              source: "allie",
+              message: "Allie failed to respond"
+            });
+          }
+        } catch (e) {
+          console.error("Failed to trigger alert webhook", e);
+        }
 
-  // ✅ single JSON payload, no dangling extra "error" object after this
-  return res.status(200).json({
-  reply: "Oops… network thoda slow lag raha hai. Abhi text se baat karti hoon: tum kahan se ho? 😊",
-  error: {
-    message: "Both primary and fallback models failed",
-    handled: true
-  }
-});
+        // ✅ single JSON payload
+        return res.status(200).json({
+          reply: "Oops… network thoda slow lag raha hai. Abhi text se baat karti hoon: tum kahan se ho? 😊",
+          error: {
+            message: "Both primary and fallback models failed",
+            handled: true
+          }
+        });
+      } // <-- close inner if (!response.ok) for fallback
+    }   // <-- close outer if (!response.ok) for primary
     const data = await response.json();
 
 const replyTextRaw =
@@ -702,6 +704,7 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
