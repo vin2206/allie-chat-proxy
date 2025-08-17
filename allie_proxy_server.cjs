@@ -312,6 +312,9 @@ const shraddhaPrompt = `Tum Shraddha ho – Shraddha Bisht, ek real ladki ho. Tu
 
 
 const app = express();
+function selfBase(req) {
+  return process.env.SERVER_URL || `${req.protocol}://${req.get('host')}`;
+}
 const ALLOWED_ORIGINS = [
   'https://sajwans-projects.vercel.app',                                    // ← production
   'https://allie-chat-app-git-main-vinay-sajwans-projects.vercel.app',      // previews
@@ -532,7 +535,7 @@ if (ROLEPLAY_NEEDS_PREMIUM && roleMode === 'roleplay' && !isPremium) {
     const recent = errorTimestamps.filter(t => Date.now() - t < 10 * 60 * 1000); // 10 min window
 
     if (recent.length >= 5) {
-      await fetch(`${process.env.SERVER_URL}/report-error`, {
+      await fetch(`${selfBase(req)}/report-error`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -595,7 +598,7 @@ const fallbackModel = "mistralai/mistral-small-3";
 
     if (!response.ok) {
       console.log("Primary model failed, switching to fallback...");
-      await fetch(`${process.env.SERVER_URL}/report-error`, {
+      await fetch(`${selfBase(req)}/report-error`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -608,7 +611,7 @@ const fallbackModel = "mistralai/mistral-small-3";
       response = await fetchFromModel(fallbackModel, safeMessages);
 
       if (!response.ok) {
-        await fetch(`${process.env.SERVER_URL}/report-error`, {
+        await fetch(`${selfBase(req)}/report-error`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -691,7 +694,7 @@ ttsText = (ttsText || "").replace(/\b(amm|um+|hmm+|haan+|huh+)\b/gi, "").replace
     bumpVoice(sessionId); // consume one quota
     console.log(`[voice] +1 for session=${sessionId} remaining=${remainingVoice(sessionId, isPremium)}`);
 
-    const hostBase = process.env.SERVER_URL || `https://${req.headers.host}`;
+    const hostBase = process.env.SERVER_URL || `${req.protocol}://${req.get('host')}`;
 const audioUrl = `${hostBase}/audio/${audioFileName}`;
     return res.json({ audioUrl }); // audio-only response
   } catch (e) {
@@ -708,7 +711,7 @@ return res.json({ reply: safeReply });
 
   } catch (err) {
     console.error("Final error:", err);
-    await fetch(`${process.env.SERVER_URL}/report-error`, {
+    await fetch(`${selfBase(req)}/report-error`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -755,6 +758,7 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
