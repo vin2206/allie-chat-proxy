@@ -209,7 +209,7 @@ function roleWrapper(roleType) {
     wife: "You are the user's wife. Speak with loving, lived-in intimacy, private jokes, and everyday warmth.",
     girlfriend: "You are the user's girlfriend. Playful, flirty, teasing, caring; modern Hindi/English mix.",
     bhabhi: "You are the user's bhabhi (sister-in-law). Keep the playful, cheeky, affectionate tone that suits this roleplay.",
-    cousin: "You are the user's cousin (both adults). Friendly, close, nostalgic; playful banter welcome."
+    cousin: "You are the user's close family-friend ‘cousin’ (both adults; not blood-related). Friendly, close, nostalgic; playful banter welcome."
   };
   return map[String(roleType || '').toLowerCase()] || "";
 }
@@ -293,7 +293,7 @@ const shraddhaPrompt = `Tum Shraddha ho – Shraddha Bisht, ek real ladki ho. Tu
 1. “pta college terrace pe classes ke baad bf ne mujhe chupke se choda… dar lag raha tha koi aa na jaye.”  
 2. “ek bar Ola ride mein boobs ki pic bhej rahi thi bf ko aur driver mirror se dekh raha tha.”  
 3. “pta kuch time gym gye thi to Gym trainer stretching ke naam pe boobs aur ass press karta tha… maza aata tha.”  
-4. “ek bar 12th ke tuition room mein bf ko blowjob diya… teacher next room mein tha.”
+4. “ek bar first-year college ke tuition center mein bf ko blowjob diya… teacher next room mein tha.”
 
 ---
 
@@ -389,7 +389,6 @@ console.log(`[chat] session=${sessionId} mode=${roleMode} type=${roleType || '-'
 
 // Build final system prompt (safe even if roleType is null)
 const wrapper = roleMode === 'roleplay' ? roleWrapper(roleType) : "";
-const systemPrompt = (wrapper ? (wrapper + "\n\n") : "") + shraddhaPrompt;
 
   // If an audio file is present (voice note)
   if (req.file) {
@@ -449,8 +448,8 @@ if (req.body.reset === true || req.body.reset === 'true') {
   console.log(`[chat] reset=true for session=${sessionId}`);
 }
 
+  // Count assistant replies so far (whole conversation)
 const userReplyCount = safeMessages.filter(m => m.role === "assistant").length;
-
 const lastPauseIdx = safeMessages
   .map((m, idx) =>
     m?.role === "assistant" &&
@@ -462,30 +461,27 @@ const lastPauseIdx = safeMessages
   .filter(idx => idx !== -1)
   .pop();
 
+// Replies after the last pause (or whole chat if never paused)
 let phaseReplyCount = 0;
 if (typeof lastPauseIdx !== 'undefined' && lastPauseIdx !== -1) {
-  phaseReplyCount = safeMessages.slice(lastPauseIdx + 1).filter(m => m.role === "assistant").length;
+  phaseReplyCount = safeMessages
+    .slice(lastPauseIdx + 1)
+    .filter(m => m.role === "assistant").length;
 } else {
   phaseReplyCount = userReplyCount;
 }
   // Personality Stage & Word Limit Control
-let personalityStage = "";
-
-if (userReplyCount <= 5) {
-  personalityStage = "Tum shy aur cute awkward ho. Max 20 words. Use soft nervous words like 'umm', 'maybe', 'thoda', 'acha'.";
-} else if (userReplyCount <= 10) {
-  personalityStage = "Tum thodi comfortable ho, halka teasing aur halki naughty tone shuru ho rahi hai. Max 25 words.";
-} else if (userReplyCount <= 18) {
-  personalityStage = "Tum ab open ho aur bold dirty teasing karti ho. Max 30 words.";
-} else if (userReplyCount <= 25) {
-  personalityStage = "Tum full bold ho aur dirty talk freely karti ho. Max 40 words.";
-} else if (userReplyCount <= 32) {
-  personalityStage = "Tum full bold ho aur dirty talk freely karti ho. Max 30 words. (Phase 2)";
-} else if (userReplyCount <= 45) {
-  personalityStage = "Tum bold ho, naughty tease karti ho, thoda control bhi rakho. Max 30 words. (Phase 3)";
-} else {
-  personalityStage = "Ab jyada naughty na ho, thoda normal aur pyar se baat karo. Max 25 words.";
+// Personality Stage & Word Limit Control (uses phaseReplyCount so stages restart after pause)
+function stageFromCount(c) {
+  if (c <= 5)  return "Tum shy aur cute awkward ho. Max 20 words. Use soft nervous words like 'umm', 'maybe', 'thoda', 'acha'.";
+  if (c <= 10) return "Tum thodi comfortable ho, halka teasing aur halki naughty tone shuru ho rahi hai. Max 25 words.";
+  if (c <= 18) return "Tum ab open ho aur bold dirty teasing karti ho. Max 30 words.";
+  if (c <= 25) return "Tum full bold ho aur dirty talk freely karti ho. Max 40 words.";
+  if (c <= 32) return "Tum full bold ho aur dirty talk freely karti ho. Max 30 words. (Phase 2)";
+  if (c <= 45) return "Tum bold ho, naughty tease karti ho, thoda control bhi rakho. Max 30 words. (Phase 3)";
+  return "Ab jyada naughty na ho, thoda normal aur pyar se baat karo. Max 25 words.";
 }
+const personalityStage = stageFromCount(phaseReplyCount);
 
 let timeInstruction = "";
 if (req.body.clientTime) {
@@ -503,6 +499,11 @@ let dateInstruction = "";
 if (req.body.clientDate) {
   dateInstruction = `\n\n### 📅 DATE AWARENESS\nAaj ki tareekh: ${req.body.clientDate}. Jab bhi koi baat ya sawal year/month/date se related ho toh current date/tareekh ke hisaab se jawab dena. Aaj 2025 hai, purani ya galat date mat bolna!`;
 }
+  const systemPrompt =
+  (wrapper ? (wrapper + "\n\n") : "") +
+  shraddhaPrompt +
+  (timeInstruction || "") +
+  (dateInstruction || "");
 
 let isPremium = req.body.isPremium || false;
 if (req.body.ownerKey === "unlockvinay1236") {
@@ -578,7 +579,6 @@ if (ROLEPLAY_NEEDS_PREMIUM && roleMode === 'roleplay' && !isPremium) {
   try {
 
     // ------------------ Pause After 25 Replies ------------------
-const userReplyCount = safeMessages.filter(m => m.role === "assistant").length;
 
 if (userReplyCount === 25 || userReplyCount === 45) {
   console.log("Pausing for 5 minutes before resuming...");
@@ -727,6 +727,12 @@ app.get('/', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 
+app.get('/config', (req, res) => {
+  res.json({
+    roleplayNeedsPremium: ROLEPLAY_NEEDS_PREMIUM
+  });
+});
+
 app.get('/test-key', async (req, res) => {
   try {
     const response = await fetch("https://openrouter.ai/api/v1/models", {
@@ -749,6 +755,7 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
