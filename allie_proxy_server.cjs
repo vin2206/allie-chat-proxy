@@ -54,6 +54,9 @@ async function transcribeWithWhisper(audioPath) {
 
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
 const SHRADDHA_VOICE_ID = "WnFIhLMD7HtSxjuKKrfY"; // <--- Paste gargi's voice id here
+// Server-side roleplay gate + whitelist
+const ROLEPLAY_NEEDS_PREMIUM = process.env.ROLEPLAY_NEEDS_PREMIUM === 'true';
+const ALLOWED_ROLES = new Set(['wife','girlfriend','bhabhi','cousin']);
 // -------- Voice usage limits (per session_id, reset daily) --------
 const VOICE_LIMITS = { free: 50, premium: 50 };
 const sessionUsage = new Map(); // sessionId -> { date: 'YYYY-MM-DD', count: 0 }
@@ -375,11 +378,16 @@ app.post('/chat', upload.single('audio'), async (req, res) => {
 
   // Support session_id for future limit tracking
   const sessionId = req.body.session_id || 'anon';
-  // Read role info from client
-const roleMode = req.body.roleMode || 'stranger';
-const roleType = req.body.roleType || null;
+  // Read + sanitize role info from client
+const rawMode = (req.body.roleMode || 'stranger').toString().toLowerCase();
+const rawType = (req.body.roleType || '').toString().toLowerCase();
+const roleMode = rawMode === 'roleplay' ? 'roleplay' : 'stranger';
+const roleType = ALLOWED_ROLES.has(rawType) ? rawType : null;
 
-// Build final system prompt
+// (Logging early for analytics)
+console.log(`[chat] session=${sessionId} mode=${roleMode} type=${roleType || '-'}`);
+
+// Build final system prompt (safe even if roleType is null)
 const wrapper = roleMode === 'roleplay' ? roleWrapper(roleType) : "";
 const systemPrompt = (wrapper ? (wrapper + "\n\n") : "") + shraddhaPrompt;
 
@@ -435,6 +443,10 @@ if (req.file && userMessage) {
   // If frontend says reset, wipe context for a fresh start
 if (req.body.reset === true || req.body.reset === 'true') {
   safeMessages.length = 0; // empty array in-place
+}
+  
+  if (req.body.reset === true || req.body.reset === 'true') {
+  console.log(`[chat] reset=true for session=${sessionId}`);
 }
 
 const userReplyCount = safeMessages.filter(m => m.role === "assistant").length;
@@ -502,6 +514,13 @@ if (!isPremium && userReplyCount >= 10) {
   console.log("Free limit reached, locking chat...");
   return res.status(200).json({
     reply: "Baby mujhe aur baat karni thi… but system mujhe rok raha hai 😢… agar premium unlock kar lo toh hum bina ruk ruk ke hours tak baat karenge aur mai tumhe voice note bhi bhejungi 😘.",
+    locked: true
+  });
+}
+  // Optional: roleplay requires premium (controlled by ENV)
+if (ROLEPLAY_NEEDS_PREMIUM && roleMode === 'roleplay' && !isPremium) {
+  return res.status(200).json({
+    reply: "Roleplay unlock karo na… phir main proper wife/bhabhi/gf vibe mein aaoongi 💕",
     locked: true
   });
 }
@@ -670,6 +689,7 @@ ttsText = (ttsText || "").replace(/\b(amm|um+|hmm+|haan+|huh+)\b/gi, "").replace
     const audioFilePath = path.join(audioDir, audioFileName);
     await generateShraddhaVoice(ttsText, audioFilePath);
     bumpVoice(sessionId); // consume one quota
+    console.log(`[voice] +1 for session=${sessionId} remaining=${remainingVoice(sessionId, isPremium)}`);
 
     const hostBase = process.env.SERVER_URL || `https://${req.headers.host}`;
 const audioUrl = `${hostBase}/audio/${audioFileName}`;
@@ -729,6 +749,7 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
