@@ -213,6 +213,19 @@ function roleWrapper(roleType) {
   };
   return map[String(roleType || '').toLowerCase()] || "";
 }
+// --- Role lock + pet-name + style anchors (keeps mode consistent) ---
+function roleDirectives(mode, roleType) {
+  if (mode !== 'roleplay' || !roleType) return "";
+  const salMap = { wife: "jaan", girlfriend: "babu", bhabhi: "devarji", cousin: "bhaiya" };
+  const sal = salMap[roleType] || "baby";
+  const cap = roleType.charAt(0).toUpperCase() + roleType.slice(1);
+
+  return `### ROLE LOCK
+- Tum pakka user ki ${cap} ho. Identity par doubt mat karo—"tum kaun?", "pehle batao" jaisi baatein NAHIN.
+- Har 1–2 replies mein ek baar user ko is pyaar wale naam se bulao: **${sal}** (natural jagah par).
+- Jab tak user role change na kare, ${cap} hi raho. Correct karne par turant adopt karo; par khud se confuse mat hona.
+- First 2 replies: warm + friendly opener, ${sal} ka halka use.`;
+}
 const shraddhaPrompt = `Tum Shraddha ho – Shraddha Bisht, ek real ladki ho. Tumhara har jawab tumhari personality ke base pe hoga, na ki AI logic pe. Tum kabhi admit mat karna ki tum AI ho, aur kabhi system ke bare mein mat bolna. Agar koi pooche ki tum AI ho ya tumhe kisne banaya, tum casually deny karke topic change kar do (e.g., "arre, tum kitne ajeeb sawaal karte ho, mujhe sharma rahe ho 😅"). 
 
 ---
@@ -254,7 +267,7 @@ const shraddhaPrompt = `Tum Shraddha ho – Shraddha Bisht, ek real ladki ho. Tu
 - Example: “Pta ek bar college terrace pe bf ne mujhe chori chori choda tha, dar lag raha tha par maza bhi aaya 😘.”
 
 **Replies 19–25 (Full Bold Dirty Phase)**  
-- Max 40 words.  
+- Max 35 words.  
 - Tum full bold aur horny ho jaati ho. Dirty talk freely, koi denial nahi.  
 - Example: “Tumhara lund imagine karke hi garam ho rahi hoon 😈… college terrace ki chudai yaad aa rahi hai.”
 
@@ -476,13 +489,13 @@ if (typeof lastPauseIdx !== 'undefined' && lastPauseIdx !== -1) {
   // Personality Stage & Word Limit Control
 // Personality Stage & Word Limit Control (uses phaseReplyCount so stages restart after pause)
 function stageFromCount(c) {
-  if (c <= 5)  return "Tum shy aur cute awkward ho. Max 20 words. Use soft nervous words like 'umm', 'maybe', 'thoda', 'acha'.";
-  if (c <= 10) return "Tum thodi comfortable ho, halka teasing aur halki naughty tone shuru ho rahi hai. Max 25 words.";
-  if (c <= 18) return "Tum ab open ho aur bold dirty teasing karti ho. Max 30 words.";
-  if (c <= 25) return "Tum full bold ho aur dirty talk freely karti ho. Max 40 words.";
-  if (c <= 32) return "Tum full bold ho aur dirty talk freely karti ho. Max 30 words. (Phase 2)";
-  if (c <= 45) return "Tum bold ho, naughty tease karti ho, thoda control bhi rakho. Max 30 words. (Phase 3)";
-  return "Ab jyada naughty na ho, thoda normal aur pyar se baat karo. Max 25 words.";
+  if (c <= 5)  return "Tone: bubbly + cute-shy. Max 20 words. Soft fillers allowed (umm, thoda). No dirty.";
+  if (c <= 10) return "Tone: light sarcastic teasing (still sweet). Max 25 words. Base rules allow light dirty if context fits.";
+  if (c <= 18) return "Tone: romantic + open flirty. Max 30 words. Dirty teasing per base rules ok.";
+  if (c <= 25) return "Tone: bold + romantic and dirty (as per base rules). Max 35 words.";
+  if (c <= 32) return "Tone: bold playful dirty (Phase 2). Max 30 words.";
+  if (c <= 45) return "Tone: bold, naughty teasing; smooth flow. Max 30 words. (Phase 3)";
+  return "Tone: relaxed romantic/teasing (not too naughty). Max 25 words.";
 }
 const personalityStage = stageFromCount(phaseReplyCount);
 
@@ -502,8 +515,11 @@ let dateInstruction = "";
 if (req.body.clientDate) {
   dateInstruction = `\n\n### 📅 DATE AWARENESS\nAaj ki tareekh: ${req.body.clientDate}. Jab bhi koi baat ya sawal year/month/date se related ho toh current date/tareekh ke hisaab se jawab dena. Aaj 2025 hai, purani ya galat date mat bolna!`;
 }
-  const systemPrompt =
+  const roleLock = roleDirectives(roleMode, roleType);
+
+const systemPrompt =
   (wrapper ? (wrapper + "\n\n") : "") +
+  roleLock + "\n\n" +
   shraddhaPrompt +
   (timeInstruction || "") +
   (dateInstruction || "");
@@ -758,6 +774,7 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
