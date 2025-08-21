@@ -91,11 +91,28 @@ function bumpVoice(sessionId) {
 
 // -------- Voice trigger detection --------
 const VOICE_NOUN = /(voice|audio|a+w?a+a?j|a+w?a+a?z|awaaz|awaz|avaaz|avaj|awaj)/i;
-const VOICE_VERB = /(bhej(?:o|do)?|send|suna(?:o|do)?|bol(?:o|kar)?)/i;
+// removed "bol(o|kar)" so normal chat "bolo" won't trigger voice
+const VOICE_VERB = /(bhej(?:o|do)?|send|suna(?:o|do)?)/i;
 
 function wantsVoice(userText = "") {
   const t = String(userText || "").toLowerCase();
   return VOICE_NOUN.test(t) && VOICE_VERB.test(t);
+}
+// ---- Strip any leaked "Phase/Reply" labels and placeholders ----
+function stripMetaLabels(text = "") {
+  let t = String(text || "");
+
+  // kill placeholders if model typed them
+  t = t.replace(/\[?\s*voice\s*note\s*\]?/ig, "")
+       .replace(/<\s*(voice|audio)\s*>/ig, "");
+
+  // remove a leading asterisked meta header with Phase/Reply
+  t = t.replace(/^\s*\*[^*]*(?:phase|reply)\s*#?\d*[^*]*\*\s*[:-]?\s*/i, "");
+
+  // remove stray "Reply #12" tokens
+  t = t.replace(/\bReply\s*#\d+\b/ig, "");
+
+  return t.replace(/\s{2,}/g, " ").trim();
 }
 
 // -------- Hinglish prep for TTS (more natural pacing) --------
@@ -695,20 +712,16 @@ const replyTextRaw =
     // If the model typed a placeholder like "[voice note]" or "<voice>", detect it
 const modelPlaceholder = /\[?\s*voice\s*note\s*\]?$/i.test(replyTextRaw.trim()) ||
                          /<\s*(voice|audio)\s*>/i.test(replyTextRaw);
+    const cleanedText = stripMetaLabels(replyTextRaw);
 
 // If model hinted at voice, treat it as a voice request too
 
 // --------- VOICE OR TEXT DECISION ---------
-// --------- VOICE OR TEXT DECISION ---------
-// (userTextJustSent was created right after the big console.log)
 const userAskedVoice = wantsVoice(userTextJustSent) || !!req.body.wantVoice;
 const userSentAudio  = !!req.file;
 
-// Only trigger voice when:
-// 1) user actually asked (verb+noun match), OR
-// 2) user sent an audio note, OR
-// 3) model explicitly put a placeholder like [voice note]
-let triggerVoice = userSentAudio || userAskedVoice || modelPlaceholder;
+// Only trigger voice if the USER asked or sent audio (ignore model placeholders)
+let triggerVoice = userSentAudio || userAskedVoice;
 
 // use the existing isPremium you already set above
 const remaining = remainingVoice(sessionId, isPremium);
@@ -722,8 +735,8 @@ if (triggerVoice && remaining <= 0) {
 
 if (triggerVoice) {
   // If model wrote just a placeholder or too-short text, speak a friendly line instead
-let base = replyTextRaw?.trim() || "";
-if (modelPlaceholder || base.length < 6) {
+let base = cleanedText;
+if (!base || base.length < 6) {
   base = "Thik hai, yeh meri awaaz hai… tum kahan se ho? 😊";
 }
 
@@ -750,7 +763,9 @@ const audioUrl = `${hostBase}/audio/${audioFileName}`;
 }
 
 // Otherwise, plain text response
-const safeReply = modelPlaceholder ? "🔊 (voice reply)" : replyTextRaw;
+const safeReply = cleanedText && cleanedText.length
+  ? cleanedText
+  : "Hmm, bolo—kya soch rahe the? 🙂";
 return res.json({ reply: safeReply });
 
   } catch (err) {
@@ -802,6 +817,7 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
