@@ -373,12 +373,22 @@ const app = express();
 function selfBase(req) {
   return process.env.SERVER_URL || `${req.protocol}://${req.get('host')}`;
 }
-const ALLOWED_ORIGINS = [
-  'https://sajwans-projects.vercel.app',                                    // ← production
-  'https://allie-chat-app-git-main-vinay-sajwans-projects.vercel.app',      // previews
-  'https://allie-chat-d9g7ehg0r-vinay-sajwans-projects.vercel.app'
-];
-app.use(cors({ origin: (o, cb) => cb(null, !o || ALLOWED_ORIGINS.includes(o)), methods: ['GET','POST'] }));
+// CORS allowlist
+const ALLOWED_ORIGINS = new Set([
+  'https://chat.buddyby.com',                                     // your new domain
+  'https://allie-chat-app.vercel.app',                            // project alias (if you’ll use it)
+  'https://allie-chat-app-vinay-sajwans-projects.vercel.app',     // project alias shown in Vercel
+  'https://allie-chat-app-git-main-vinay-sajwans-projects.vercel.app' // preview you’ve been using
+  // add 'http://localhost:5173' etc. if you need local dev later
+]);
+
+app.use(cors({
+  origin(origin, cb) {
+    if (!origin) return cb(null, true);                // curl/mobile/native
+    cb(null, ALLOWED_ORIGINS.has(origin));
+  },
+  methods: ['GET','POST'],
+}));
 app.use(express.json());
 app.use('/audio', cors(), express.static(audioDir));   // ensure CORS headers on mp3
 
@@ -817,3 +827,4 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
