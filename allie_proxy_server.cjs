@@ -388,10 +388,10 @@ const roleType = ALLOWED_ROLES.has(rawType) ? rawType : null;
 
 // (Logging early for analytics)
 console.log(`[chat] session=${sessionId} mode=${roleMode} type=${roleType || '-'}`);
-  // Simple server cooldown: 1 message per 6 seconds per session
+  // Simple server cooldown: 1 message per 4 seconds per session
 const nowMs = Date.now();
 const last = lastMsgAt.get(sessionId) || 0;
-const GAP_MS = 6000;
+const GAP_MS = 4000;
 if (nowMs - last < GAP_MS) {
   return res.status(200).json({
     reply: "Thoda ruk jao na… ek baar mein ek hi message handle kar sakti hoon💛"
@@ -455,13 +455,22 @@ const safeMessages = norm(messages);
 if (req.file && userMessage) {
   safeMessages.push({ role: 'user', content: userMessage });
 }
-  // Hard history trim: keep only last 6 messages server-side
-const HARD_HISTORY_KEEP = 6;
-const finalMessages = safeMessages.slice(-HARD_HISTORY_KEEP);
-  // If frontend says reset, wipe context for a fresh start
-if (req.body.reset === true || req.body.reset === 'true') {
-  safeMessages.length = 0; // empty array in-place
+  // If it's a text message (no audio), overwrite the last user message with the capped text
+if (!req.file && typeof userMessage === 'string' && userMessage) {
+  for (let i = safeMessages.length - 1; i >= 0; i--) {
+    if (safeMessages[i].role === 'user') {
+      safeMessages[i] = { ...safeMessages[i], content: userMessage };
+      break;
+    }
+  }
 }
+  // If frontend says reset, wipe context for a fresh start
+  if (req.body.reset === true || req.body.reset === 'true') {
+    safeMessages.length = 0; // empty array in-place
+  }
+  // Hard history trim: keep only last 6 messages server-side
+  const HARD_HISTORY_KEEP = 6;
+  const finalMessages = safeMessages.slice(-HARD_HISTORY_KEEP);
   
   if (req.body.reset === true || req.body.reset === 'true') {
   console.log(`[chat] reset=true for session=${sessionId}`);
@@ -600,57 +609,7 @@ if (ROLEPLAY_NEEDS_PREMIUM && roleMode === 'roleplay' && !isPremium) {
 
     return res.status(400).json({ error: "Invalid input. Expecting `messages` array." });
   }
-  // === Big-input guardrail ===
-const USE_CHEAP_GIST = false;               // keep false = hard-cap only; turn true to use Gemma gist
-const GIST_MODEL = "google/gemma-2-9b-it";  // same cheap model you already call elsewhere
-
-function countWords(s = "") {
-  return (s || "").trim().split(/\s+/).filter(Boolean).length;
-}
-
-function hardCapWords(s = "", n = 220) {
-  const w = (s || "").trim().split(/\s+/);
-  if (w.length <= n) return (s || "").trim();
-  return w.slice(0, n).join(" ") + " …";
-}
-
-async function gistIfHuge(text) {
-  // Summarize to 2–3 short lines in Hinglish (cheap)
-  try {
-    const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: GIST_MODEL,
-        temperature: 0.2,
-        max_tokens: 120,
-        messages: [
-          { role: "system",
-            content: "Summarize the user's long message into 2–3 short lines in Hinglish. Keep key intent and any questions. No extra commentary." },
-          { role: "user", content: text }
-        ]
-      })
-    });
-    if (!r.ok) throw new Error("gist failed");
-    const data = await r.json();
-    const out = data?.choices?.[0]?.message?.content?.trim();
-    return out || hardCapWords(text, 220);
-  } catch {
-    return hardCapWords(text, 220);
-  }
-}
-
-async function protectLongInput(text) {
-  if (!text || typeof text !== "string") return text;
-  if (countWords(text) <= 220) return text;         // safe size
-  // If you want smarter shortening later, set USE_CHEAP_GIST = true
-  if (!USE_CHEAP_GIST) return hardCapWords(text, 220);
-  return await gistIfHuge(text);
-}
-
+  
   // ------------------ Model Try Block ------------------
   async function fetchFromModel(modelName, messages) {
   console.log("Calling model:", modelName);
@@ -665,11 +624,8 @@ async function protectLongInput(text) {
     body: JSON.stringify({
       model: modelName,
      messages: [
-  {
-    role: "system",
-    content: systemPrompt + "\n\nSTAGE: " + personalityStage
-  },
-  ...finalMessages
+  { role: "system", content: systemPrompt + "\n\nSTAGE: " + personalityStage },
+  ...(messages || [])
 ],                                                                                                                                                                                                                                    
       temperature: 0.8,
       max_tokens: 256
@@ -692,7 +648,7 @@ if (userReplyCount === 25 || userReplyCount === 45) {
     const primaryModel = "anthropic/claude-3.7-sonnet";
 const fallbackModel = "mistralai/mistral-small-3";
 
-    let response = await fetchFromModel(primaryModel, safeMessages);
+    let response = await fetchFromModel(primaryModel, finalMessages);
 
     if (!response.ok) {
       console.log("Primary model failed, switching to fallback...");
@@ -706,7 +662,7 @@ const fallbackModel = "mistralai/mistral-small-3";
         })
       });
 
-      response = await fetchFromModel(fallbackModel, safeMessages);
+      response = await fetchFromModel(fallbackModel, finalMessages);
 
       if (!response.ok) {
         await fetch(`${selfBase(req)}/report-error`, {
@@ -747,8 +703,6 @@ const replyTextRaw =
   data.choices?.[0]?.message?.content ||
   "Sorry baby, I’m a bit tired. Can you message me in a few minutes?";
     // If the model typed a placeholder like "[voice note]" or "<voice>", detect it
-const modelPlaceholder = /\[?\s*voice\s*note\s*\]?$/i.test(replyTextRaw.trim()) ||
-                         /<\s*(voice|audio)\s*>/i.test(replyTextRaw);
     const cleanedText = stripMetaLabels(replyTextRaw);
 
 // If model hinted at voice, treat it as a voice request too
@@ -863,6 +817,7 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
