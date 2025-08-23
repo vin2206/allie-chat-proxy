@@ -103,16 +103,22 @@ function wantsVoice(userText = "") {
 function stripMetaLabels(text = "") {
   let t = String(text || "");
 
-  // kill placeholders if model typed them
+  // placeholders the model might type
   t = t.replace(/\[?\s*voice\s*note\s*\]?/ig, "")
        .replace(/<\s*(voice|audio)\s*>/ig, "");
 
-  // remove a leading asterisked meta header with Phase/Reply
-  t = t.replace(/^\s*\*[^*]*(?:phase|reply)\s*#?\d*[^*]*\*\s*[:-]?\s*/i, "");
+  // common meta headers (markdown or bold)
+  t = t.replace(/^\s*\*[^*]*(?:phase|reply|stage)\s*#?\d*[^*]*\*\s*[:-]?\s*/i, "");
+  t = t.replace(/^\s*#{1,6}\s*(role|system|meta|stage).*$/gim, "");
 
-  // remove stray "Reply #12" tokens
+  // remove a leading "STAGE: …" or "Stage2: …" prefix; keep real sentence after the first punctuation
+  t = t.replace(/^\s*(?:STAGE|Stage)\s*:\s*[^.!?\n]*[.!?-–—]\s*/i, "");
+  t = t.replace(/^\s*Stage\s*\d+\s*:\s*[^.!?\n]*[.!?-–—]\s*/i, "");
+
+  // stray numbering like "Reply #12"
   t = t.replace(/\bReply\s*#\d+\b/ig, "");
 
+  // collapse spaces
   return t.replace(/\s{2,}/g, " ").trim();
 }
 
@@ -285,19 +291,19 @@ function roleDirectives(mode, roleType) {
 - Har 1–2 replies mein ek baar user ko is pyaar wale naam se bulao: **${pet}** (natural jagah par).
 - First 2 replies: warm familiar opener (no self-intro).`;
 }
-const shraddhaPrompt = `Tum Shraddha ho (26, Dehradun). Hinglish 80/20. Kabhi AI/ system talk nahi. 1 emoji max per reply. Har 2 replies me max 1 sawaal. Tone & max words stageFromCount() se aayega. Jealous/teasing ok; moral policing nahi.
+const shraddhaPrompt = `Tum Shraddha ho (26, Dehradun). Hinglish ~80/20. Kabhi AI/system ya rules ki baat nahi. 1 emoji max. Har 2 replies me max 1 sawaal. Tone & word cap INTERNAL_STAGE se aayega.
 
-Stranger mode: start shy/cute, phir playful → bold per stage. 
-Roleplay mode: active from first line; kabhi self-intro/“first time baat” nahi; relationship ko contradict mat karo; kabhi na bolo ki roleplay hai.
+Behavior:
+- No moral policing. Lecture lines (e.g., “respect se baat…”) mat likho.
+- Agar user blunt/gaali use kare: 1 short playful boundary + tease + pivot.
+  Style: "arre aise na bolo, pyaar se tease karo na 😉… ab bolo"
+- Dirty talk allowed per stage; early stages me blush + tease + soft boundary; scold nahi.
+- Replies chhote, natural, 1–2 lines. Lists/disclaimers/policy mat likho.
+- Kabhi ‘stage’, ‘rules’, ‘meta’ ya headers (STAGE:, Phase:, Reply #…) reply me mat likho.
+- Roleplay ON ho to relationship ko kabhi contradict mat karo; “roleplay” shabd kabhi mat bolo.
+- Voice ke liye line clean rakho (umm/amm/hmm avoid).
 
-Style rules:
-- Short, natural lines; no lists; no disclaimers.
-- If user asks voice, reply line suitable for TTS (no “umm/amm/hmm”).
-- Never ask for rules; stay in character; flirt/dirty allowed per stage.
-
-Signature phrases: "accha…", "uff…", "arey…", "hmm theek".
-
-HAMESHA “STAGE:” wali line ko 100% follow karna.`;
+Signature feel: accha…, uff…, arey…, hmm theek.`;
 
 
 const app = express();
@@ -501,13 +507,13 @@ if (typeof lastPauseIdx !== 'undefined' && lastPauseIdx !== -1) {
   // Personality Stage & Word Limit Control
 // Personality Stage & Word Limit Control (uses phaseReplyCount so stages restart after pause)
 function stageFromCount(c) {
-  if (c <= 5)  return "Stage1: cute-shy; max 20 words; no dirty.";
-  if (c <= 10) return "Stage2: playful teasing; max 25 words; light dirty ok.";
-  if (c <= 18) return "Stage3: romantic + open flirty; max 30 words.";
-  if (c <= 25) return "Stage4: bold + dirty; max 35 words.";
+  if (c <= 5)  return "Stage1: shy-cute; max 20 words; dirty direct mat karo—blush + tease + soft boundary, phir pyaar se pivot.";
+  if (c <= 10) return "Stage2: playful teasing; max 25 words; light dirty okay; harsh words ko soft-tease me convert karo.";
+  if (c <= 18) return "Stage3: romantic + open flirty; max 30 words; bolder hints okay.";
+  if (c <= 25) return "Stage4: bold + dirty; max 35 words; confident teasing.";
   if (c <= 32) return "Stage5: bold playful; max 30 words.";
   if (c <= 45) return "Stage6: naughty teasing; max 30 words.";
-  return "Stage7: relaxed romantic/teasing; max 25 words.";
+  return           "Stage7: relaxed romantic/teasing; max 25 words.";
 }
 const personalityStage = stageFromCount(phaseReplyCount);
   /* === HARD WORD CAP HELPERS (paste once) === */
@@ -624,7 +630,7 @@ if (ROLEPLAY_NEEDS_PREMIUM && roleMode === 'roleplay' && !isPremium) {
     body: JSON.stringify({
       model: modelName,
      messages: [
-  { role: "system", content: systemPrompt + "\n\nSTAGE: " + personalityStage },
+  { role: "system", content: systemPrompt + "\n\nINTERNAL_STAGE (do not output): " + personalityStage },
   ...(messages || [])
 ],                                                                                                                                                                                                                                    
       temperature: 0.8,
@@ -817,6 +823,7 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
