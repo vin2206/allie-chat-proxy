@@ -702,7 +702,7 @@ let base = cleanedText;
 if (!base || base.length < 6) {
   base = "Thik hai, yeh meri awaaz hai… tum kahan se ho? 😊";
 }
-const voiceWordCap = 18;
+const voiceWordCap = 16;
 base = clampWords(base, Math.min(maxWords, voiceWordCap));
 let ttsText = await translateToHindi(base);
 if (!ttsText) ttsText = prepHinglishForTTS(base);
@@ -789,6 +789,7 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
