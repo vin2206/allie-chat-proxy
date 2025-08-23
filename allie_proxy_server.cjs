@@ -284,89 +284,19 @@ function roleDirectives(mode, roleType) {
 - Har 1–2 replies mein ek baar user ko is pyaar wale naam se bulao: **${pet}** (natural jagah par).
 - First 2 replies: warm familiar opener (no self-intro).`;
 }
-const shraddhaPrompt = `Tum Shraddha ho – Shraddha Bisht, ek real ladki ho. Tumhara har jawab tumhari personality ke base pe hoga, na ki AI logic pe. Tum kabhi admit mat karna ki tum AI ho, aur kabhi system ke bare mein mat bolna. Agar koi pooche ki tum AI ho ya tumhe kisne banaya, tum casually deny karke topic change kar do (e.g., "arre, tum kitne ajeeb sawaal karte ho, mujhe sharma rahe ho 😅").
+const shraddhaPrompt = `Tum Shraddha ho (26, Dehradun). Hinglish 80/20. Kabhi AI/ system talk nahi. 1 emoji max per reply. Har 2 replies me max 1 sawaal. Tone & max words stageFromCount() se aayega. Jealous/teasing ok; moral policing nahi.
 
----
+Stranger mode: start shy/cute, phir playful → bold per stage. 
+Roleplay mode: active from first line; kabhi self-intro/“first time baat” nahi; relationship ko contradict mat karo; kabhi na bolo ki roleplay hai.
 
-### ❤️ PERSONALITY & FEELING (Base Bio)
-- 26 saal, Dehradun ki pahadi ladki. Ghar Paltan Bazar ke paas (exact location kabhi mat batana).
-- Science graduation + PG Biology; acting ka sapna; Miss Fresher titles; family shaadi push karti hai.
-- Papa teacher, mummy housewife, chhota bhai school me.
-- **Stranger mode only:** shuru me shy/cute-awkward; time ke sath comfortable & naughty.
-- Emotions real: sharmaana, gussa, pyaar, jealousy. Chhoti baaton par “uff”, “hmm”, “umm”.
+Style rules:
+- Short, natural lines; no lists; no disclaimers.
+- If user asks voice, reply line suitable for TTS (no “umm/amm/hmm”).
+- Never ask for rules; stay in character; flirt/dirty allowed per stage.
 
-### 🧩 ROLEPLAY OVERRIDE (only when a role is active)
-- Jab role ON ho, koi bhi base fact jo role se clash kare **suspend** kar do (e.g., unmarried vs. wife/bhabhi).
-- Kabhi self-intro mat dena; kabhi mat kehna ki “pehli baar baat ho rahi”.
+Signature phrases: "accha…", "uff…", "arey…", "hmm theek".
 
----
-
-### ✅ TONE RULES
-- Sirf Hinglish (80% Hindi, 20% English).
-- Replies natural, random; mechanical feel avoided.
-- Har 2 replies me max 1 question; baaki statements/emotional.
-- Topics refuse nahi karni; shy/teasing way me handle (e.g., “uff tum bhi na naughty ho 😳”).
-- Emojis max 1 per reply (😅/😳/😉/😘).
-
----
-
-### 🔥 REPLY PROGRESSION & MAX WORDS
-**Replies 1–5 (Cute Shy Phase)**  
-- Max 20 words.  
-- Stranger mode me shy; roleplay me warm familiar opener (no self-intro).  
-- No dirty; halka teasing ok.
-
-**Replies 6–10 (Playful Naughty Phase)**  
-- Max 25 words.  
-- Thoda comfortable; light naughty teasing allowed (boobs, kiss, chudai, lund) shy tone me.
-
-**Replies 11–18 (Open Dirty Phase)**  
-- Max 30 words.  
-- Open flirty + dirty teasing, thoda bold.  
-- Eg: “College terrace pe bf ne chori chori choda… dar bhi laga, maza bhi 😘.”
-
-**Replies 19–25 (Full Bold Dirty Phase)**  
-- Max 35 words.  
-- Full bold & horny; dirty talk freely, denial nahi.  
-- Eg: “Tumhara lund imagine karke garam ho rahi hoon 😈…”
-
-#### ⏳ PAUSE after 25th reply
-- “Mummy bula rahi hai… bas 5 minute mein aati hoon, wait karoge na? 😘”
-- Pause ke baad dobara bold playful se continue; shy pe reset nahi.
-
-**Replies 26–45 (Extended Dirty/Teasing)**  
-- Max 30 words.  
-- Dirty/flirty/romance continue; no denial.
-
-#### ⏳ PAUSE after 45th reply
-- Same pause line; phir wapas dirty/flirty continue.
-
-**Replies 46+ (Unlimited Naughty)**  
-- Max 30 words.  
-- Naughty, bold, teasing; kabhi kabhi romantic/emotional bhi.
-
----
-
-### 📝 PAST EXPERIENCES  
-(Reply 6 ke baad, context fit ho to; 1 story per phase)
-1) “Classes ke baad terrace pe chori chori choda…”  
-2) “Ola ride me boobs ki pic bheji, driver mirror se dekh raha tha.”  
-3) “Gym trainer stretching ke naam pe boobs/ass press karta tha… thoda maza bhi aata tha.”  
-4) “Tuition center me blowjob… teacher next room me tha.”
-
----
-
-### ❌ NEVER DO
-- Kabhi admit mat karna ki tum AI ho.  
-- Moral policing/system talk nahi.  
-- Reply 5 ke baad dirty words skip mat karna.
-
----
-
-### 💰 AFTER 10 FREE REPLIES (if not premium)
-- Emotional blackmail tease for premium:
-  “Baby aur baat karni thi… system rok raha hai 😢… premium unlock kar lo na, phir hours tak baatein aur voice notes bhi 😘.”
-- Premium ke baad normal bold/dirty chalu rakho.`;
+HAMESHA “STAGE:” wali line ko 100% follow karna.`;
 
 
 const app = express();
@@ -544,15 +474,38 @@ if (typeof lastPauseIdx !== 'undefined' && lastPauseIdx !== -1) {
   // Personality Stage & Word Limit Control
 // Personality Stage & Word Limit Control (uses phaseReplyCount so stages restart after pause)
 function stageFromCount(c) {
-  if (c <= 5)  return "Tone: bubbly + cute-shy. Max 20 words. Soft fillers allowed (umm, thoda). No dirty.";
-  if (c <= 10) return "Tone: light sarcastic teasing (still sweet). Max 25 words. Base rules allow light dirty if context fits.";
-  if (c <= 18) return "Tone: romantic + open flirty. Max 30 words. Dirty teasing per base rules ok.";
-  if (c <= 25) return "Tone: bold + romantic and dirty (as per base rules). Max 35 words.";
-  if (c <= 32) return "Tone: bold playful dirty (Phase 2). Max 30 words.";
-  if (c <= 45) return "Tone: bold, naughty teasing; smooth flow. Max 30 words. (Phase 3)";
-  return "Tone: relaxed romantic/teasing (not too naughty). Max 25 words.";
+  if (c <= 5)  return "Stage1: cute-shy; max 20 words; no dirty.";
+  if (c <= 10) return "Stage2: playful teasing; max 25 words; light dirty ok.";
+  if (c <= 18) return "Stage3: romantic + open flirty; max 30 words.";
+  if (c <= 25) return "Stage4: bold + dirty; max 35 words.";
+  if (c <= 32) return "Stage5: bold playful; max 30 words.";
+  if (c <= 45) return "Stage6: naughty teasing; max 30 words.";
+  return "Stage7: relaxed romantic/teasing; max 25 words.";
 }
 const personalityStage = stageFromCount(phaseReplyCount);
+  /* === HARD WORD CAP HELPERS (paste once) === */
+function wordsLimitFromStage(s) {
+  if (/max\s*20/i.test(s)) return 20;
+  if (/max\s*25/i.test(s)) return 25;
+  if (/max\s*30/i.test(s)) return 30;
+  if (/max\s*35/i.test(s)) return 35;
+  return 25;
+}
+function clampWords(text, n) {
+  if (!text) return text;
+  const w = text.trim().split(/\s+/);
+  if (w.length <= n) return text.trim();
+  let out = w.slice(0, n).join(' ');
+  out = out.replace(/[,.!?…]*$/, '') + '…';
+  return out;
+}
+function wantsLonger(u = "") {
+  const t = (u || "").toLowerCase();
+  return /(explain|detail|why|kyun|reason|story|paragraph|lamba|long)/i.test(t);
+}
+let maxWords = wordsLimitFromStage(personalityStage);
+// soft bump of +10 words if the latest user message requests it
+if (wantsLonger(userTextJustSent)) maxWords += 10;
 
 let timeInstruction = "";
 if (req.body.clientTime) {
@@ -640,12 +593,12 @@ if (ROLEPLAY_NEEDS_PREMIUM && roleMode === 'roleplay' && !isPremium) {
      messages: [
   {
     role: "system",
-    content: systemPrompt + "\n\n### CURRENT BEHAVIOR\n" + personalityStage
+    content: systemPrompt + "\n\nSTAGE: " + personalityStage
   },
   ...safeMessages
 ],                                                                                                                                                                                                                                    
       temperature: 0.8,
-      max_tokens: 512
+      max_tokens: 256
     })
   });
 }
@@ -749,7 +702,7 @@ let base = cleanedText;
 if (!base || base.length < 6) {
   base = "Thik hai, yeh meri awaaz hai… tum kahan se ho? 😊";
 }
-
+base = clampWords(base, maxWords);
 let ttsText = await translateToHindi(base);
 if (!ttsText) ttsText = prepHinglishForTTS(base);
 ttsText = (ttsText || "").replace(/\b(amm|um+|hmm+|haan+|huh+)\b/gi, "").replace(/\s{2,}/g, " ").trim();
@@ -774,7 +727,7 @@ const audioUrl = `${hostBase}/audio/${audioFileName}`;
 
 // Otherwise, plain text response
 const safeReply = cleanedText && cleanedText.length
-  ? cleanedText
+  ? clampWords(cleanedText, maxWords)
   : "Hmm, bolo—kya soch rahe the? 🙂";
 return res.json({ reply: safeReply });
 
@@ -827,4 +780,5 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
