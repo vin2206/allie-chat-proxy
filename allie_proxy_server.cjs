@@ -58,7 +58,7 @@ const SHRADDHA_VOICE_ID = "WnFIhLMD7HtSxjuKKrfY"; // <--- Paste gargi's voice id
 const ROLEPLAY_NEEDS_PREMIUM = process.env.ROLEPLAY_NEEDS_PREMIUM === 'true';
 const ALLOWED_ROLES = new Set(['wife','girlfriend','bhabhi','cousin']);
 // -------- Voice usage limits (per session_id, reset daily) --------
-const VOICE_LIMITS = { free: 50, premium: 50 };
+const VOICE_LIMITS = { free: 2, premium: 8 };
 const sessionUsage = new Map(); // sessionId -> { date: 'YYYY-MM-DD', count: 0 }
 
 function todayStr() {
@@ -191,7 +191,7 @@ async function generateShraddhaVoice(text, filePath) {
   const url = `https://api.elevenlabs.io/v1/text-to-speech/${SHRADDHA_VOICE_ID}`;
   const body = {
     text,
-    model_id: "eleven_multilingual_v2",
+    model_id: "eleven_turbo_v2",   // Turbo (good quality, 60 min bucket)
     voice_settings: {
   stability: 0.60,        // less monotone, a bit snappier
   similarity_boost: 0.80, // still Isha, but allows livelier cadence
@@ -702,10 +702,19 @@ let base = cleanedText;
 if (!base || base.length < 6) {
   base = "Thik hai, yeh meri awaaz hai… tum kahan se ho? 😊";
 }
-base = clampWords(base, maxWords);
+const voiceWordCap = 18;
+base = clampWords(base, Math.min(maxWords, voiceWordCap));
 let ttsText = await translateToHindi(base);
 if (!ttsText) ttsText = prepHinglishForTTS(base);
-ttsText = (ttsText || "").replace(/\b(amm|um+|hmm+|haan+|huh+)\b/gi, "").replace(/\s{2,}/g, " ").trim();
+
+// clamp AFTER translation too (keeps clips ~5s)
+ttsText = clampWords(ttsText, voiceWordCap);
+
+// final clean
+ttsText = (ttsText || "")
+  .replace(/\b(amm|um+|hmm+|haan+|huh+)\b/gi, "")
+  .replace(/\s{2,}/g, " ")
+  .trim();
 
   try {
     const audioFileName = `${sessionId}-${Date.now()}.mp3`;
@@ -780,5 +789,6 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
