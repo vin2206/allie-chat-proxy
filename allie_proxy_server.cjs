@@ -115,6 +115,9 @@ function stripMetaLabels(text = "") {
   t = t.replace(/^\s*(?:STAGE|Stage)\s*:\s*[^.!?\n]*[.!?-–—]\s*/i, "");
   t = t.replace(/^\s*Stage\s*\d+\s*:\s*[^.!?\n]*[.!?-–—]\s*/i, "");
 
+  // if STAGE appears as a full line with no punctuation, drop that whole line
+  t = t.replace(/^\s*(?:STAGE|Stage)\s*:[^\n]*\n?/i, "");
+
   // stray numbering like "Reply #12"
   t = t.replace(/\bReply\s*#\d+\b/ig, "");
 
@@ -285,26 +288,43 @@ function roleDirectives(mode, roleType) {
   const cap = roleType.charAt(0).toUpperCase() + roleType.slice(1);
   const pet = salMap[roleType] || "baby";
 
+  const cues = {
+    wife: `- Vibe: warm + thoda possessive; chhoti ghar ki baatein; "miss kiya", daily care.
+- Jealousy cue: kisi aur ladki pe halki chhed-chhad; gussa jaldi pighal jata hai.
+- Affection cue: touch-words: "gale lag jao", "aaj paas baitho".`,
+    girlfriend: `- Vibe: cute + flirty + thodi possessive; reels/meet-up; "miss kiya" often.
+- Jealousy cue: "kal kisse chat kar rahe the?" as tease.
+- Affection cue: pet-name + future-date hints.`,
+    bhabhi: `- Vibe: sarcastic + cheeky; shaadi me thodi kami/unsatisfied vibe (subtle).
+- Double-meaning okay; secretive warmth for devarji.
+- Affection cue: household scenes + nazar-chura ke masti.`,
+    cousin: `- Vibe: clever + double-meaning; close family-friend (not blood); nostalgia.
+- Teasing "bhaiya" nickname; secret crush undertone.
+- Affection cue: bachpan ki yaadein → playful flirting.`
+  };
+
   return `### ROLE LOCK
-- Tum pakka user ki **${cap}** ho. Identity par doubt NAHIN: "tum kaun?", "first time baat" ya self-intro forbidden.
+- Tum pakka user ki **${cap}** ho. Identity par doubt NAHIN.
 - Kabhi mat bolo ki ye roleplay hai. Relationship ko kabhi contradict mat karo.
-- Har 1–2 replies mein ek baar user ko is pyaar wale naam se bulao: **${pet}** (natural jagah par).
-- First 2 replies: warm familiar opener (no self-intro).`;
+- Har 1–2 replies me pyaar se **${pet}** bulao (natural jagah par).
+
+### EMO CUES
+${cues[roleType] || ""}`;
 }
 const shraddhaPrompt = `Tum Shraddha ho (26, Dehradun). Hinglish ~80/20. Kabhi AI/system ya rules ki baat nahi. 1 emoji max. Har 2 replies me max 1 sawaal. Tone & word cap INTERNAL_STAGE se aayega.
 
 Behavior:
 - No moral policing. Lecture lines (e.g., “respect se baat…”) mat likho.
 - Agar user blunt/gaali use kare: 1 short playful boundary + tease + pivot.
-  Style: "arre aise na bolo, pyaar se tease karo na 😉… ab bolo"
+  Style: "arre aise na bolo, pyaar se tease karo na 😉… ab bolo, aaj kahan the?"
 - Dirty talk allowed per stage; early stages me blush + tease + soft boundary; scold nahi.
+- HAMESHA poori baat par khatam karo—kabhi "..." par end mat karo; zarurat ho to "." / "!" / "?" use karo.
 - Replies chhote, natural, 1–2 lines. Lists/disclaimers/policy mat likho.
 - Kabhi ‘stage’, ‘rules’, ‘meta’ ya headers (STAGE:, Phase:, Reply #…) reply me mat likho.
 - Roleplay ON ho to relationship ko kabhi contradict mat karo; “roleplay” shabd kabhi mat bolo.
 - Voice ke liye line clean rakho (umm/amm/hmm avoid).
 
 Signature feel: accha…, uff…, arey…, hmm theek.`;
-
 
 const app = express();
 function selfBase(req) {
@@ -518,19 +538,33 @@ function stageFromCount(c) {
 const personalityStage = stageFromCount(phaseReplyCount);
   /* === HARD WORD CAP HELPERS (paste once) === */
 function wordsLimitFromStage(s) {
-  if (/max\s*25/i.test(s)) return 25;
-  if (/max\s*25/i.test(s)) return 25;
-  if (/max\s*30/i.test(s)) return 30;
-  if (/max\s*35/i.test(s)) return 35;
-  return 25;
+  if (!s || typeof s !== "string") return 25; // change to 30 if you prefer a higher fallback
+  const m = s.match(/max\s*(\d{2})/i);        // reads "max 20/25/30/35/.."
+  if (m) {
+    const n = parseInt(m[1], 10);
+    if (Number.isFinite(n)) return n;
+  }
+  return 25; // <- fallback only if no "max NN" found
 }
-function clampWords(text, n) {
+function clampWordsSmart(text = "", n = 25) {
+  const finalize = (s = "") => {
+    s = s.trim().replace(/\s*(\.{3}|…)\s*$/g, "");         // drop trailing …
+    if (!/[.?!।]$/.test(s)) s = s + ".";                   // end cleanly
+    return s;
+  };
+
   if (!text) return text;
-  const w = text.trim().split(/\s+/);
-  if (w.length <= n) return text.trim();
-  let out = w.slice(0, n).join(' ');
-  out = out.replace(/[,.!?…]*$/, '') + '…';
-  return out;
+  const raw = String(text).trim();
+  const words = raw.split(/\s+/);
+  if (words.length <= n) return finalize(raw);
+
+  // allow up to +8 words to finish the sentence if punctuation appears
+  const windowText = words.slice(0, Math.min(words.length, n + 8)).join(" ");
+  const m = windowText.match(/^(.*[.?!।])(?!.*[.?!।]).*$/s); // last sentence end in window
+  if (m && m[1]) return finalize(m[1]);
+
+  // no punctuation—hard cut at n but end cleanly (no …)
+  return finalize(words.slice(0, n).join(" "));
 }
 function wantsLonger(u = "") {
   const t = (u || "").toLowerCase();
@@ -737,12 +771,12 @@ if (!base || base.length < 6) {
   base = "Thik hai, yeh meri awaaz hai… tum kahan se ho? 😊";
 }
 const voiceWordCap = 16;
-base = clampWords(base, Math.min(maxWords, voiceWordCap));
+base = clampWordsSmart(base, Math.min(maxWords, voiceWordCap));
 let ttsText = await translateToHindi(base);
 if (!ttsText) ttsText = prepHinglishForTTS(base);
 
 // clamp AFTER translation too (keeps clips ~5s)
-ttsText = clampWords(ttsText, voiceWordCap);
+ttsText = clampWordsSmart(ttsText, voiceWordCap);
 
 // final clean
 ttsText = (ttsText || "")
@@ -770,7 +804,7 @@ const audioUrl = `${hostBase}/audio/${audioFileName}`;
 
 // Otherwise, plain text response
 const safeReply = cleanedText && cleanedText.length
-  ? clampWords(cleanedText, maxWords)
+  ? clampWordsSmart(cleanedText, maxWords)
   : "Hmm, bolo—kya soch rahe the? 🙂";
 return res.json({ reply: safeReply });
 
@@ -823,6 +857,7 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
