@@ -507,7 +507,7 @@ if (typeof lastPauseIdx !== 'undefined' && lastPauseIdx !== -1) {
   // Personality Stage & Word Limit Control
 // Personality Stage & Word Limit Control (uses phaseReplyCount so stages restart after pause)
 function stageFromCount(c) {
-  if (c <= 5)  return "Stage1: shy-cute; max 20 words; dirty direct mat karo—blush + tease + soft boundary, phir pyaar se pivot.";
+  if (c <= 5)  return "Stage1: shy-cute; max 25 words; dirty direct mat karo—blush + tease + soft boundary, phir pyaar se pivot.";
   if (c <= 10) return "Stage2: playful teasing; max 25 words; light dirty okay; harsh words ko soft-tease me convert karo.";
   if (c <= 18) return "Stage3: romantic + open flirty; max 30 words; bolder hints okay.";
   if (c <= 25) return "Stage4: bold + dirty; max 35 words; confident teasing.";
@@ -518,7 +518,7 @@ function stageFromCount(c) {
 const personalityStage = stageFromCount(phaseReplyCount);
   /* === HARD WORD CAP HELPERS (paste once) === */
 function wordsLimitFromStage(s) {
-  if (/max\s*20/i.test(s)) return 20;
+  if (/max\s*25/i.test(s)) return 25;
   if (/max\s*25/i.test(s)) return 25;
   if (/max\s*30/i.test(s)) return 30;
   if (/max\s*35/i.test(s)) return 35;
@@ -823,6 +823,7 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
