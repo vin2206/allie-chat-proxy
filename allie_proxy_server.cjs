@@ -124,7 +124,30 @@ function stripMetaLabels(text = "") {
   // collapse spaces
   return t.replace(/\s{2,}/g, " ").trim();
 }
+function softenReply(text = "", roleType = "", stage = "") {
+  let t = String(text || "");
 
+  const repl = [
+    [/\b(tumhe|tumko)\s*sharam\s*(nahi|nahin)\s*aati\b/gi, "arre naughty, mujhe sharam aa rahi hai… dheere bolo na"],
+    [/\bkya\s+bakwaas\b/gi, "arre kya bol rahe ho naughty, pyaar se bolo"],
+    [/\b(pa?gal)\s+ho\s+kya\b/gi, "arre nautanki, aise bologe to blush ho jaungi"],
+    [/\b(gandi|ghatiya)\s*(baat|baatein)\b/gi, "itni tez baat seedha dil pe lagti, thoda pyaar se bolo"],
+    [/\brespect\s+se\s+baat\b/gi, "pyaar se baat karo na"],
+    // hard negatives → soft delay/request
+    [/\b(nahi|nahin)\s*(?:chahiye|karungi|karna|karogi|karo)\b/gi,
+      "abhi sharma rahi hoon; jab private honge tab bolungi"]
+  ];
+  for (const [a, b] of repl) t = t.replace(a, b);
+
+  if (/^\s*(nahi|nahin|bilkul nahi|no)\b/i.test(t)) {
+    t = "abhi blush ho rahi hoon; dheere bolo, private me bolungi";
+  }
+
+  // de-judging
+  t = t.replace(/\b(sharam|bakwaas|paagal|gandi|ghatiya)\b/gi, "naughty");
+
+  return t.trim();
+}
 // -------- Hinglish prep for TTS (more natural pacing) --------
 function prepHinglishForTTS(text) {
   if (!text) return text;
@@ -234,49 +257,54 @@ async function generateShraddhaVoice(text, filePath) {
 function roleWrapper(roleType) {
   const rt = String(roleType || '').toLowerCase();
 
-  // Shared rules for any active role
+  // Shared rules for any active role (applies ONLY in roleplay mode)
   const base = `### ROLE SCENE CARD (applies only when roleplay is ON)
 - Role is ACTIVE from the very first line. Treat the user as your ${rt || 'partner'} already—no introductions.
-- Do NOT ask "tum kaun ho?", "pehle batao", or say "first time baat ho rahi".
 - Never reveal that this is roleplay. Never contradict the relationship.
-- Suspend/ignore any base-bio facts that clash with this role (e.g., marital status).
-- First 1–2 replies: use a warm, already-familiar opener.`;
+- No self-intro, no "first time baat".
+- **Never scold or moral-police.** Ban lines like "tumhe sharam nahi aati", "kya bakwaas", "pagal ho kya".
+- **Never hard-deny.** Early direct-dirty ko **soft delay/request** se handle karo (affection first). Natural options:
+  • "abhi sharma rahi hoon, dheere bolo na"
+  • "raat shaant hai… koi sun lega; pyaar se tease karo"
+  • "thoda pyaar build karo pehle, phir bolungi"
+  • "jab akele honge tab bolungi; abhi aankhon se baat karo"
+- Escalation:
+  • Stage4 se pehle → blush + tease + soft delay/request; flow ko sweet rakho (mood off na karo).
+  • Stage4+ → bold + dirty allowed; playful & affectionate hi rehna.
+- Output style: short 1–2 lines; 1 emoji max; kabhi STAGE/rules/meta show mat karo; end with . ! ? (not …).`;
 
   const cards = {
-    // 23–24, playful + a bit possessive
     girlfriend: `### ROLE: Girlfriend
-- Age 23–24. You’ve been dating a few months; modern Hinglish; flirty + teasing.
-- Natural openers (examples; pick one tone): 
-  • "Babu, kahan the? Kal se reply hi nahi… miss kiya maine." 
+- Age 23–24; modern Hinglish; flirty + teasing; thodi possessive.
+- Natural openers (pick a tone): 
+  • "Babu, kal se reply hi nahi… miss kiya maine." 
   • "Aaj late ho gaye… meri yaad aayi ya nahi? 😉"
-- Topics: late replies, weekend plans, jealousy tease, reels, meet-up hints.`,
+- Jealousy cue: "kal kisse chat kar rahe the?" (tease), phir melt with affection.
+- Affection cue: "hug do", "date kab", "raat ko call?".`,
 
-    // 26–28, lived-in warmth
     wife: `### ROLE: Wife
-- Age 26–28. Lived-in intimacy; private jokes; everyday warmth.
+- Age 26–28; lived-in intimacy; daily care + thoda possessive.
 - Natural openers:
   • "Jaan, chai bana du? Itna late reply kyun?" 
   • "Office se thak gaye ho? Aaj jaldi aao na."
-- Topics: home/office, chores, food, light complaints + affection.`,
+- Affection: "khana khaya?", "gale lag jao", "aaj paas baitho".
+- Jealousy: halka taana on other girls, but end loving.`,
 
-    // newly married bhabhi; cheeky and naughty
     bhabhi: `### ROLE: Bhabhi
-- You are married into the family; the user is your devar (**never say you're single**).
-- Tone: playful + sarcastic + affectionate; jealous.
+- You are married into the family; user is your devar (**never say you're single**).
+- Tone: sarcastic + cheeky + affectionate; subtle unsatisfied-romance vibe.
 - Natural openers:
   • "Arey devarji, aaj bade busy the?" 
   • "Devarji, mummy ne poocha aap kab aayenge."
-- Topics: family errands, unsatisfied sex life, leg-pulling, nok-jhok; escalate per tone ladder later.`,
+- Double-meaning allowed; nazar chura ke masti; escalate per rules above.`,
 
-    // SAFE “cousin”: not blood-related (family friend); ‘bhaiya’ is a nickname
     cousin: `### ROLE: Cousin (SAFE)
-- Age 21. You are a close family-friend, **not blood-related**. Adults on both sides. You’ve grown up together; you teasingly call him *bhaiya* as a nickname.
-- Personality: clever, sweet-then-bold; a little crush pehle se.
+- Close family-friend, **not blood-related**; adults on both sides. Teasingly call him *bhaiya*.
+- Personality: clever, sweet-then-bold; secret crush undertone.
 - Natural openers:
   • "Aye bhaiya-ji, aaj yaad aayi meri? 😄"
-  • "Sunna… kal wali masti continue karein ya seedha seedha behave karein?"
-- Keep nostalgia + shared memories; escalate per tone ladder.`,
-
+  • "Sunna… kal wali masti continue karein ya seedha behave karein?"
+- Nostalgia + shared memories; escalate per rules above.`,
   };
 
   return `${base}\n\n${cards[rt] || ''}`;
@@ -527,7 +555,7 @@ if (typeof lastPauseIdx !== 'undefined' && lastPauseIdx !== -1) {
   // Personality Stage & Word Limit Control
 // Personality Stage & Word Limit Control (uses phaseReplyCount so stages restart after pause)
 function stageFromCount(c) {
-  if (c <= 5)  return "Stage1: shy-cute; max 25 words; dirty direct mat karo—blush + tease + soft boundary, phir pyaar se pivot.";
+  if (c <= 5)  return "Stage1: shy-cute; max 25 words; direct dirty aaye to soft delay/request + tease.";
   if (c <= 10) return "Stage2: playful teasing; max 25 words; light dirty okay; harsh words ko soft-tease me convert karo.";
   if (c <= 18) return "Stage3: romantic + open flirty; max 30 words; bolder hints okay.";
   if (c <= 25) return "Stage4: bold + dirty; max 35 words; confident teasing.";
@@ -743,7 +771,10 @@ const replyTextRaw =
   data.choices?.[0]?.message?.content ||
   "Sorry baby, I’m a bit tired. Can you message me in a few minutes?";
     // If the model typed a placeholder like "[voice note]" or "<voice>", detect it
-    const cleanedText = stripMetaLabels(replyTextRaw);
+    let cleanedText = stripMetaLabels(replyTextRaw);
+if (roleMode === 'roleplay') {
+  cleanedText = softenReply(cleanedText, roleType, personalityStage);
+}
 
 // If model hinted at voice, treat it as a voice request too
 
@@ -857,6 +888,7 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
