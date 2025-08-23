@@ -60,6 +60,7 @@ const ALLOWED_ROLES = new Set(['wife','girlfriend','bhabhi','cousin']);
 // -------- Voice usage limits (per session_id, reset daily) --------
 const VOICE_LIMITS = { free: 2, premium: 8 };
 const sessionUsage = new Map(); // sessionId -> { date: 'YYYY-MM-DD', count: 0 }
+const lastMsgAt = new Map(); // sessionId -> timestamp (ms)
 
 function todayStr() {
   const d = new Date();
@@ -387,6 +388,16 @@ const roleType = ALLOWED_ROLES.has(rawType) ? rawType : null;
 
 // (Logging early for analytics)
 console.log(`[chat] session=${sessionId} mode=${roleMode} type=${roleType || '-'}`);
+  // Simple server cooldown: 1 message per 6 seconds per session
+const nowMs = Date.now();
+const last = lastMsgAt.get(sessionId) || 0;
+const GAP_MS = 6000;
+if (nowMs - last < GAP_MS) {
+  return res.status(200).json({
+    reply: "Thoda ruk jao na… ek baar mein ek hi message handle kar sakti hoon💛"
+  });
+}
+lastMsgAt.set(sessionId, nowMs);
 
 // Build final system prompt (safe even if roleType is null)
 const wrapper = roleMode === 'roleplay' ? roleWrapper(roleType) : "";
@@ -421,6 +432,10 @@ const wrapper = roleMode === 'roleplay' ? roleWrapper(roleType) : "";
       : req.body.messages;
     userMessage = arr[arr.length - 1]?.content || '';
   }
+  // Hard cap user text to 220 words to prevent cost spikes
+  if (userMessage && typeof userMessage === 'string') {
+    userMessage = hardCapWords(userMessage, 220);
+  }
   
   console.log("POST /chat hit!", req.body);
   // --- normalize latest user text once for voice trigger check ---
@@ -440,6 +455,9 @@ const safeMessages = norm(messages);
 if (req.file && userMessage) {
   safeMessages.push({ role: 'user', content: userMessage });
 }
+  // Hard history trim: keep only last 6 messages server-side
+const HARD_HISTORY_KEEP = 6;
+const finalMessages = safeMessages.slice(-HARD_HISTORY_KEEP);
   // If frontend says reset, wipe context for a fresh start
 if (req.body.reset === true || req.body.reset === 'true') {
   safeMessages.length = 0; // empty array in-place
@@ -502,6 +520,12 @@ function clampWords(text, n) {
 function wantsLonger(u = "") {
   const t = (u || "").toLowerCase();
   return /(explain|detail|why|kyun|reason|story|paragraph|lamba|long)/i.test(t);
+}
+  // -- Hard cap long user text (no extra model calls) --
+function hardCapWords(s = "", n = 220) {
+  const w = (s || "").trim().split(/\s+/);
+  if (w.length <= n) return (s || "").trim();
+  return w.slice(0, n).join(" ") + " …";
 }
 let maxWords = wordsLimitFromStage(personalityStage);
 // soft bump of +10 words if the latest user message requests it
@@ -576,6 +600,56 @@ if (ROLEPLAY_NEEDS_PREMIUM && roleMode === 'roleplay' && !isPremium) {
 
     return res.status(400).json({ error: "Invalid input. Expecting `messages` array." });
   }
+  // === Big-input guardrail ===
+const USE_CHEAP_GIST = false;               // keep false = hard-cap only; turn true to use Gemma gist
+const GIST_MODEL = "google/gemma-2-9b-it";  // same cheap model you already call elsewhere
+
+function countWords(s = "") {
+  return (s || "").trim().split(/\s+/).filter(Boolean).length;
+}
+
+function hardCapWords(s = "", n = 220) {
+  const w = (s || "").trim().split(/\s+/);
+  if (w.length <= n) return (s || "").trim();
+  return w.slice(0, n).join(" ") + " …";
+}
+
+async function gistIfHuge(text) {
+  // Summarize to 2–3 short lines in Hinglish (cheap)
+  try {
+    const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: GIST_MODEL,
+        temperature: 0.2,
+        max_tokens: 120,
+        messages: [
+          { role: "system",
+            content: "Summarize the user's long message into 2–3 short lines in Hinglish. Keep key intent and any questions. No extra commentary." },
+          { role: "user", content: text }
+        ]
+      })
+    });
+    if (!r.ok) throw new Error("gist failed");
+    const data = await r.json();
+    const out = data?.choices?.[0]?.message?.content?.trim();
+    return out || hardCapWords(text, 220);
+  } catch {
+    return hardCapWords(text, 220);
+  }
+}
+
+async function protectLongInput(text) {
+  if (!text || typeof text !== "string") return text;
+  if (countWords(text) <= 220) return text;         // safe size
+  // If you want smarter shortening later, set USE_CHEAP_GIST = true
+  if (!USE_CHEAP_GIST) return hardCapWords(text, 220);
+  return await gistIfHuge(text);
+}
 
   // ------------------ Model Try Block ------------------
   async function fetchFromModel(modelName, messages) {
@@ -595,7 +669,7 @@ if (ROLEPLAY_NEEDS_PREMIUM && roleMode === 'roleplay' && !isPremium) {
     role: "system",
     content: systemPrompt + "\n\nSTAGE: " + personalityStage
   },
-  ...safeMessages
+  ...finalMessages
 ],                                                                                                                                                                                                                                    
       temperature: 0.8,
       max_tokens: 256
@@ -789,6 +863,7 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
