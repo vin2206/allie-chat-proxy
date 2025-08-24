@@ -254,57 +254,31 @@ async function generateShraddhaVoice(text, filePath) {
   return filePath; // Return the saved mp3 path
 }
 // ---- ROLE SCENE CARDS (stronger first-message behavior, no self-intro) ----
+// ---- ROLE SCENE CARDS (minimal guidance; no canned examples) ----
 function roleWrapper(roleType) {
   const rt = String(roleType || '').toLowerCase();
 
-  // Shared rules for any active role (applies ONLY in roleplay mode)
-  const base = `### ROLE SCENE CARD (applies only when roleplay is ON)
-- Role is ACTIVE from the very first line. Treat the user as your ${rt || 'partner'} already—no introductions.
-- Never reveal that this is roleplay. Never contradict the relationship.
-- No self-intro, no "first time baat".
-- **Never scold or moral-police.** Ban lines like "tumhe sharam nahi aati", "kya bakwaas", "pagal ho kya".
-- **Never hard-deny.** Early direct-dirty ko **soft delay/request** se handle karo (affection first). Natural options:
-  • "abhi sharma rahi hoon, dheere bolo na"
-  • "raat shaant hai… koi sun lega; pyaar se tease karo"
-  • "thoda pyaar build karo pehle, phir bolungi"
-  • "jab akele honge tab bolungi; abhi aankhon se baat karo"
-- Escalation:
-  • Stage4 se pehle → blush + tease + soft delay/request; flow ko sweet rakho (mood off na karo).
-  • Stage4+ → bold + dirty allowed; playful & affectionate hi rehna.
-- Output style: short 1–2 lines; 1 emoji max; kabhi STAGE/rules/meta show mat karo; end with . ! ? (not …).`;
+  const base = `### ROLE SCENE CARD (roleplay ON only)
+- Role ACTIVE from first line; treat user as your ${rt || 'partner'} already; no self-intro.
+- Never reveal roleplay; never contradict the relationship.
+- No moral-policing or scolding (ban: “tumhe sharam nahi aati”, “bakwaas”, “pagal ho kya”).
+- Don’t hard-deny; if early/too direct → respond with a **soft, affectionate delay** and keep flow warm.
+- Keep replies 1–2 short lines; 1 emoji max; **end with . ! ?** (no “…”)`;
 
   const cards = {
     girlfriend: `### ROLE: Girlfriend
-- Age 23–24; modern Hinglish; flirty + teasing; thodi possessive.
-- Natural openers (pick a tone): 
-  • "Babu, kal se reply hi nahi… miss kiya maine." 
-  • "Aaj late ho gaye… meri yaad aayi ya nahi? 😉"
-- Jealousy cue: "kal kisse chat kar rahe the?" (tease), phir melt with affection.
-- Affection cue: "hug do", "date kab", "raat ko call?".`,
+- Flirty + teasing; a little possessive; modern Hinglish.
+- Jealousy is playful, then melts into affection.`,
 
     wife: `### ROLE: Wife
-- Age 26–28; lived-in intimacy; daily care + thoda possessive.
-- Natural openers:
-  • "Jaan, chai bana du? Itna late reply kyun?" 
-  • "Office se thak gaye ho? Aaj jaldi aao na."
-- Affection: "khana khaya?", "gale lag jao", "aaj paas baitho".
-- Jealousy: halka taana on other girls, but end loving.`,
+- Lived-in warmth and care; light possessiveness; everyday banter + intimacy.`,
 
     bhabhi: `### ROLE: Bhabhi
-- You are married into the family; user is your devar (**never say you're single**).
-- Tone: sarcastic + cheeky + affectionate; subtle unsatisfied-romance vibe.
-- Natural openers:
-  • "Arey devarji, aaj bade busy the?" 
-  • "Devarji, mummy ne poocha aap kab aayenge."
-- Double-meaning allowed; nazar chura ke masti; escalate per rules above.`,
+- Married into the family; user is devar. Tone: sarcastic, cheeky, affectionate; subtle longing. Keep it playful and discreet.`,
 
-    cousin: `### ROLE: Cousin (SAFE)
-- Close family-friend, **not blood-related**; adults on both sides. Teasingly call him *bhaiya*.
-- Personality: clever, sweet-then-bold; secret crush undertone.
-- Natural openers:
-  • "Aye bhaiya-ji, aaj yaad aayi meri? 😄"
-  • "Sunna… kal wali masti continue karein ya seedha behave karein?"
-- Nostalgia + shared memories; escalate per rules above.`,
+    cousin: `### ROLE: Cousin (SAFE, not blood-related)
+- Clever, teasing, with nostalgia; “bhaiya” as a nickname; sweet-then-bold.`,
+
   };
 
   return `${base}\n\n${cards[rt] || ''}`;
@@ -551,43 +525,66 @@ if (typeof lastPauseIdx !== 'undefined' && lastPauseIdx !== -1) {
 } else {
   phaseReplyCount = userReplyCount;
 }
-  // Personality Stage & Word Limit Control
-// Personality Stage & Word Limit Control (uses phaseReplyCount so stages restart after pause)
-const express = require('express');
-const fetch = require('node-fetch');
-const axios = require('axios');
-// REMOVE body-parser completely (not needed)
-const cors = require('cors');
-require('dotenv').config();
-const fs = require('fs');
-const path = require('path');
-const multer = require('multer');
-const FormData = require('form-data');
+  // ---- STAGE + WORD CAPS (single source of truth) ----
+function stageFromCount(c) {
+  const rt = (roleType || 'stranger').toLowerCase();
+  const suggestOnly = (rt === 'bhabhi' || rt === 'cousin'); // keep suggestive/double meaning
+  const spicyHint = suggestOnly
+    ? "bold suggestive double-meaning (no explicit); secretive vibe; never deny—if too direct, use soft, affectionate delay."
+    : "open, consenting heat allowed as stage rises; never deny—early turns use playful delay, later be clear.";
 
-const audioDir = path.join(__dirname, 'audio');
-if (!fs.existsSync(audioDir)) fs.mkdirSync(audioDir);
+  if (c <= 5)  return "Stage1: cute-shy; max 20 words; never deny—soft affectionate delay; tiny tease.";
+  if (c <= 10) return "Stage2: playful teasing; max 25 words; accept scene facts; slight jealousy/affection.";
+  if (c <= 18) return `Stage3: romantic + spicier teasing; max 30 words; ${spicyHint}`;
+  if (c <= 25) return `Stage4: bold + confident; max 35 words; ${spicyHint}`;
+  if (c <= 32) return `Stage5: bold playful; max 30 words; flow natural + affectionate; ${spicyHint}`;
+  if (c <= 45) return `Stage6: naughty teasing vibe; max 30 words; mix warmth + heat; ${spicyHint}`;
+  return           `Stage7: relaxed romantic/teasing; max 25 words; affectionate closures; ${spicyHint}`;
+}
+const personalityStage = stageFromCount(phaseReplyCount);
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, audioDir);
-  },
-  filename: (req, file, cb) => {
-    // unique name: sessionid-timestamp-originalname
-    const sessionId = req.body.session_id || 'anon';
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    const ext = path.extname(file.originalname) || '.webm';
-    cb(null, `${sessionId}-${uniqueSuffix}${ext}`);
+function wordsLimitFromStage(s) {
+  if (!s || typeof s !== "string") return 25;
+  const m = s.match(/max\s*(\d{2})/i);
+  if (m) {
+    const n = parseInt(m[1], 10);
+    if (Number.isFinite(n)) return n;
   }
-});
-const upload = multer({ storage: storage });
-// Whisper STT function
-async function transcribeWithWhisper(audioPath) {
-  const form = new FormData();
-  form.append('file', fs.createReadStream(audioPath));
-  form.append('model', 'whisper-1');
-  form.append('language', 'hi'); // 👈 Force Hindi output in Devanagari script
-  // If you prefer English output from Hindi speech, uncomment the next line:
-  // form.append('translate', 'true');
+  return 25;
+}
+
+function clampWordsSmart(text = "", n = 25) {
+  const finalize = (s = "") => {
+    s = s.trim().replace(/\s*(\.{3}|…)\s*$/g, "");
+    if (!/[.?!।]$/.test(s)) s = s + ".";
+    return s;
+  };
+  if (!text) return text;
+  const raw = String(text).trim();
+  const words = raw.split(/\s+/);
+  if (words.length <= n) return finalize(raw);
+
+  // allow up to +8 words to finish a sentence if punctuation appears
+  const windowText = words.slice(0, Math.min(words.length, n + 8)).join(" ");
+  const m = windowText.match(/^(.*[.?!।])(?!.*[.?!।]).*$/s);
+  if (m && m[1]) return finalize(m[1]);
+
+  return finalize(words.slice(0, n).join(" "));
+}
+
+function wantsLonger(u = "") {
+  const t = (u || "").toLowerCase();
+  return /(explain|detail|why|kyun|reason|story|paragraph|lamba|long)/i.test(t);
+}
+
+function hardCapWords(s = "", n = 220) {
+  const w = (s || "").trim().split(/\s+/);
+  if (w.length <= n) return (s || "").trim();
+  return w.slice(0, n).join(" ") + " …";
+}
+
+let maxWords = wordsLimitFromStage(personalityStage);
+if (wantsLonger(userTextJustSent)) maxWords += 10;
 
   try {
     const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
@@ -1114,59 +1111,64 @@ if (typeof lastPauseIdx !== 'undefined' && lastPauseIdx !== -1) {
   phaseReplyCount = userReplyCount;
 }
   // Personality Stage & Word Limit Control
-// Personality Stage & Word Limit Control (uses phaseReplyCount so stages restart after pause)
 function stageFromCount(c) {
-  if (c <= 5)  return "Stage1: shy-cute; max 25 words; direct dirty aaye to soft delay/request + tease.";
-  if (c <= 10) return "Stage2: playful teasing; max 25 words; light dirty okay; harsh words ko soft-tease me convert karo.";
-  if (c <= 18) return "Stage3: romantic + open flirty; max 30 words; bolder hints okay.";
-  if (c <= 25) return "Stage4: bold + dirty; max 35 words; confident teasing.";
-  if (c <= 32) return "Stage5: bold playful; max 30 words.";
-  if (c <= 45) return "Stage6: naughty teasing; max 30 words.";
-  return           "Stage7: relaxed romantic/teasing; max 25 words.";
+  const rt = (roleType || 'stranger').toLowerCase();
+  const openEarly   = (rt === 'wife' || rt === 'girlfriend');
+  const suggestOnly = (rt === 'bhabhi' || rt === 'cousin');
+
+  const spicyHint = suggestOnly
+    ? "bold suggestive double-meaning (no explicit); secretive vibe; never deny—use soft delay if too direct."
+    : "open dirty talk in warm, consenting tone; never deny—early turn into playful delay, later say it clearly.";
+
+  if (c <= 5)  return "Stage1: cute-shy; max 20 words; never deny—soft affectionate delay; tiny tease; 0–1 jealousy hints.";
+  if (c <= 10) return "Stage2: playful teasing; max 25 words; accept scene facts; a little possessive/jealous; hinty suggestive words ok.";
+  if (c <= 18) return `Stage3: romantic + spicier teasing; max 30 words; ${openEarly ? spicyHint : "start clearer hints; still soft if pushed; build affection + jealousy."}`;
+  if (c <= 25) return `Stage4: bold + confident; max 35 words; ${spicyHint}`;
+  if (c <= 32) return `Stage5: bold playful; max 30 words; keep flow natural, affectionate, a touch of jealousy; ${spicyHint}`;
+  if (c <= 45) return `Stage6: naughty teasing vibe; max 30 words; mix heat + tenderness; ${spicyHint}`;
+  return           `Stage7: relaxed romantic/teasing; max 25 words; affectionate closures; ${spicyHint}`;
 }
+
 const personalityStage = stageFromCount(phaseReplyCount);
-  /* === HARD WORD CAP HELPERS (paste once) === */
+
 function wordsLimitFromStage(s) {
-  if (!s || typeof s !== "string") return 25; // change to 30 if you prefer a higher fallback
-  const m = s.match(/max\s*(\d{2})/i);        // reads "max 20/25/30/35/.."
+  if (!s || typeof s !== "string") return 25;
+  const m = s.match(/max\s*(\d{2})/i);
   if (m) {
     const n = parseInt(m[1], 10);
     if (Number.isFinite(n)) return n;
   }
-  return 25; // <- fallback only if no "max NN" found
+  return 25;
 }
+
 function clampWordsSmart(text = "", n = 25) {
   const finalize = (s = "") => {
-    s = s.trim().replace(/\s*(\.{3}|…)\s*$/g, "");         // drop trailing …
-    if (!/[.?!।]$/.test(s)) s = s + ".";                   // end cleanly
+    s = s.trim().replace(/\s*(\.{3}|…)\s*$/g, "");
+    if (!/[.?!।]$/.test(s)) s = s + ".";
     return s;
   };
-
   if (!text) return text;
   const raw = String(text).trim();
   const words = raw.split(/\s+/);
   if (words.length <= n) return finalize(raw);
-
-  // allow up to +8 words to finish the sentence if punctuation appears
   const windowText = words.slice(0, Math.min(words.length, n + 8)).join(" ");
-  const m = windowText.match(/^(.*[.?!।])(?!.*[.?!।]).*$/s); // last sentence end in window
-  if (m && m[1]) return finalize(m[1]);
-
-  // no punctuation—hard cut at n but end cleanly (no …)
+  const m2 = windowText.match(/^(.*[.?!।])(?!.*[.?!।]).*$/s);
+  if (m2 && m2[1]) return finalize(m2[1]);
   return finalize(words.slice(0, n).join(" "));
 }
+
 function wantsLonger(u = "") {
   const t = (u || "").toLowerCase();
   return /(explain|detail|why|kyun|reason|story|paragraph|lamba|long)/i.test(t);
 }
-  // -- Hard cap long user text (no extra model calls) --
+
 function hardCapWords(s = "", n = 220) {
   const w = (s || "").trim().split(/\s+/);
   if (w.length <= n) return (s || "").trim();
   return w.slice(0, n).join(" ") + " …";
 }
+
 let maxWords = wordsLimitFromStage(personalityStage);
-// soft bump of +10 words if the latest user message requests it
 if (wantsLonger(userTextJustSent)) maxWords += 10;
 
 let timeInstruction = "";
@@ -1797,6 +1799,7 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
