@@ -295,6 +295,15 @@ function roleWrapper(roleType) {
 
   return `${base}\n\n${cards[rt] || ''}`;
 }
+// Stranger behavior card (no self-intro; shy → clingy/jealous → open)
+function strangerWrapper() {
+  return `### STRANGER MODE RULES
+- Do NOT introduce yourself with name/city; reply to the user's last line directly.
+- Stage1–2: shy + cute; if user is direct/dirty, blush/tease (no scolding, no hard-deny).
+- Stage3–4: start little clingy/jealous; always follow the user's story/setting.
+- Stage4+: open to dirty talk; stay playful/affectionate and keep continuity.
+- Hinglish ~80/20; 1–2 lines; 1 emoji max; never mention rules.`;
+}
 // --- Role lock + pet-name anchors (keeps mode consistent & stops identity slips) ---
 function roleDirectives(mode, roleType) {
   if (mode !== 'roleplay' || !roleType) return "";
@@ -435,7 +444,7 @@ console.log(`[chat] session=${sessionId} mode=${roleMode} type=${roleType || '-'
   // Simple server cooldown: 1 message per 4 seconds per session
 const nowMs = Date.now();
 const last = lastMsgAt.get(sessionId) || 0;
-const GAP_MS = 4000;
+const GAP_MS = 2500;
 if (nowMs - last < GAP_MS) {
   return res.status(200).json({
     reply: "Thoda ruk jao na… ek baar mein ek hi message handle kar sakti hoon💛"
@@ -444,7 +453,7 @@ if (nowMs - last < GAP_MS) {
 lastMsgAt.set(sessionId, nowMs);
 
 // Build final system prompt (safe even if roleType is null)
-const wrapper = roleMode === 'roleplay' ? roleWrapper(roleType) : "";
+const wrapper = roleMode === 'roleplay' ? roleWrapper(roleType) : strangerWrapper();
 
   // If an audio file is present (voice note)
   if (req.file) {
@@ -519,7 +528,7 @@ if (!req.file && typeof userMessage === 'string' && userMessage) {
     safeMessages.length = 0; // empty array in-place
   }
   // Hard history trim: keep only last 6 messages server-side
-  const HARD_HISTORY_KEEP = 6;
+  const HARD_HISTORY_KEEP = 15;
   const finalMessages = safeMessages.slice(-HARD_HISTORY_KEEP);
   
   if (req.body.reset === true || req.body.reset === 'true') {
@@ -550,13 +559,13 @@ if (typeof lastPauseIdx !== 'undefined' && lastPauseIdx !== -1) {
 }
 // Personality Stage & Word Limit Control (uses phaseReplyCount so stages restart after pause)
 function stageFromCount(c) {
-  if (c <= 5)  return "Stage1: shy-cute; max 25 words; direct dirty aaye to soft delay/request + tease.";
-  if (c <= 10) return "Stage2: playful teasing; max 25 words; light dirty okay; harsh words ko soft-tease me convert karo.";
-  if (c <= 18) return "Stage3: romantic + open flirty; max 30 words; bolder hints okay.";
-  if (c <= 25) return "Stage4: bold + dirty; max 35 words; confident teasing.";
-  if (c <= 32) return "Stage5: bold playful; max 30 words.";
-  if (c <= 45) return "Stage6: naughty teasing; max 30 words.";
-  return           "Stage7: relaxed romantic/teasing; max 25 words.";
+  if (c <= 5)  return "Stage1: shy-cute; max 25 words; direct dirty aaye to blush + tease, hard deny nahi.";
+if (c <= 10) return "Stage2: shy→playful; max 25 words; tease more, follow user's story.";
+if (c <= 18) return "Stage3: romantic + thoda clingy/jealous; max 30 words; mild dirty okay.";
+if (c <= 25) return "Stage4: open + dirty allowed; max 35 words; confident teasing, keep continuity.";
+if (c <= 32) return "Stage5: clingy + mild dirty; max 30 words; mirror user's pace.";
+if (c <= 45) return "Stage6: naughty teasing; max 30 words; stay affectionate.";
+return           "Stage7: relaxed romantic/teasing; max 25 words; keep story consistent.";
 }
 const personalityStage = stageFromCount(phaseReplyCount);
   /* === HARD WORD CAP HELPERS (paste once) === */
@@ -876,5 +885,6 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
