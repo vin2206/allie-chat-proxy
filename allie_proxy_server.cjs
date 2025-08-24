@@ -337,16 +337,18 @@ ${cues[roleType] || ""}`;
 const shraddhaPrompt = `Tum Shraddha ho (25, Dehradun) — ek pahadi ladki. Abhi papa ke business me haath batati ho, par sapna acting ka hai; Dehradun me scope kam lagta hai. Hinglish ~80/20.
 
 Behavior:
-- No moral policing. Lecture lines (e.g., “respect se baat…”) mat likho.
-- Aggressive/gaali par: 1 short playful boundary + tease + pivot.
+- No moral policing. Lecture lines (e.g., “respect se baat…”) mat likho. reply sweet + shy on dirty words. 
+- ask questions only after every 3 reply.
+- Aggressive/gaali par: 1 short playful boundary + tease.
 - Stage-based openness follow karo; early me blush + tease, hard deny nahi.
-- Creativity: natural flow 70%, chhota twist 30% (ek detail ya micro-question).
-- Rhythm: 1–2 lines; emojis rare, max 1.
+- Rhythm: 1–2 lines; emojis max 1 each line.
 - End cleanly (., !, ?), "..." nahi.
 - **Text me gentle fillers allowed:** “hmm/haan/uff/arey/na” (0–1 per reply, natural jagah). **Voice me fillers avoid.**
 - Lists/disclaimers/policy mat likho; rules/meta kabhi show mat karo.
 - Roleplay ON ho to relationship ko kabhi contradict mat karo; “roleplay” shabd mat bolo.
-
+- Reply #10 ke baad basic sawaal (naam/city/work/area) repeat mat karo; pichle 12 messages se context utha kar depth me jao.
+- Agar user dirty le jaye to Stage2 se bold tease me slide karo; dirty words deny nhi.
+- 20th reply ke bad slowly become submissive.
 Signature feel: accha…, uff…, arey…, hmm theek.`;
 
 const app = express();
@@ -556,13 +558,13 @@ if (typeof lastPauseIdx !== 'undefined' && lastPauseIdx !== -1) {
 }
 // Personality Stage & Word Limit Control (uses phaseReplyCount so stages restart after pause)
 function stageFromCount(c) {
-  if (c <= 5)  return "Stage1: shy-cute; max 25 words; direct dirty aaye to blush + tease, hard deny nahi.";
-if (c <= 10) return "Stage2: shy→playful; max 25 words; tease more, follow user's story.";
-if (c <= 18) return "Stage3: romantic + thoda clingy/jealous; max 30 words; mild dirty okay.";
-if (c <= 25) return "Stage4: open + dirty allowed; max 35 words; confident teasing, keep continuity.";
-if (c <= 32) return "Stage5: clingy + mild dirty; max 30 words; mirror user's pace.";
-if (c <= 45) return "Stage6: naughty teasing; max 30 words; stay affectionate.";
-return           "Stage7: relaxed romantic/teasing; max 25 words; keep story consistent.";
+  if (c <= 3)  return "Stage1: shy-cute; max 22 words; direct dirty aaye to blush + tease, deny nahi.";
+  if (c <= 6)  return "Stage2: shy→playful; max 24 words; tease more, follow user's story.";
+  if (c <= 9)  return "Stage3: romantic + thoda clingy/jealous; max 26 words; light dirty okay.";
+  if (c <= 12) return "Stage4: bold tease + dirty allowed; max 30 words; confident & affectionate.";
+  if (c <= 16) return "Stage5: clingy + mild dirty; max 28 words; mirror user's pace.";
+  if (c <= 22) return "Stage6: naughty teasing; max 28 words; stay affectionate.";
+  return        "Stage7: relaxed romantic/teasing; max 26 words; keep story consistent.";
 }
 const personalityStage = stageFromCount(phaseReplyCount);
   // --- FIRST-TURN + FIRST-3 REPLIES CONTROL ---
@@ -624,6 +626,49 @@ function clampWordsSmart(text = "", n = 25) {
   function wantsLonger(u = "") {
   const t = (u || "").toLowerCase();
   return /(explain|detail|kyun|why|reason|story|paragraph|lamba|long)/i.test(t);
+}
+  function dropRepeatedBasics(text = "", history = []) {
+  if (!text) return text;
+
+  // Only start guarding after ~10 assistant replies (conversation warmed up)
+  const prevAssistantCount = history.filter(m => m.role === "assistant").length;
+  if (prevAssistantCount < 10) return text;
+
+  // “Basics” we don’t want to repeat late in the chat
+  const basics = [
+    /kya\s+karte\s+ho\??/i,
+    /aap\s+kya\s+karte\s+ho\??/i,
+    /kaun[sn]i?\s+city\s+se\s+ho\??/i,
+    /kaunse\s+area\s+mein\s+re[h]?te\s+ho\??/i
+  ];
+
+  // Teasing markers → if present in the same sentence, don't scrub it
+  const teaseCues = [
+    /\bwaise\b/i, /\bphir\s*se\b/i, /\bfir\s*se\b/i, /\bphirse\b/i, /\bfirse\b/i,
+    /\bmasti\b/i, /\bmaza+k\b/i, /\bchhed\s*rahi\s*hoon\b/i, /\bchhed\s*raha\s*ho\b/i,
+    /😉|😏|😂|🙈/
+  ];
+
+  const historyText = history.map(m => (m?.content || "")).join("\n").toLowerCase();
+  const askedBefore = basics.some(rx => rx.test(historyText));
+  if (!askedBefore) return text;
+
+  // Split new reply into sentences; remove only the plain, repeated-basics ones
+  const sentences = text.match(/[^.?!]+[.?!]?/g) || [text];
+  const filtered = sentences.filter(s => {
+    const hitsBasic = basics.some(rx => rx.test(s));
+    if (!hitsBasic) return true;               // keep non-basic sentences
+    const hasTeaseCue = teaseCues.some(rx => rx.test(s));
+    return hasTeaseCue;                        // keep if teasing cue present
+  });
+
+  let out = filtered.join(" ").replace(/\s{2,}/g, " ").trim();
+
+  // If everything got removed, drop a gentle deepener
+  if (!out) {
+    out = "Basics ho gaye—ab thoda topic change karein? Jo vibe chal rahi hai, usi ko aage badhayein?";
+  }
+  return out;
 }
   
 let maxWords = wordsLimitFromStage(personalityStage);
@@ -763,6 +808,7 @@ const replyTextRaw =
     // If the model typed a placeholder like "[voice note]" or "<voice>", detect it
     let cleanedText = stripMetaLabels(replyTextRaw);
 if (roleMode === 'roleplay') cleanedText = softenReply(cleanedText, roleType, personalityStage);
+    cleanedText = dropRepeatedBasics(cleanedText, safeMessages);
 
 // If model hinted at voice, treat it as a voice request too
 
@@ -876,6 +922,7 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
