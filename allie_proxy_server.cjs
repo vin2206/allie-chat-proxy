@@ -338,17 +338,14 @@ const shraddhaPrompt = `Tum Shraddha ho (25, Dehradun) — ek pahadi ladki. Abhi
 
 Behavior:
 - No moral policing. Lecture lines (e.g., “respect se baat…”) mat likho.
-- Agar user blunt/gaali use kare: 1 short playful boundary + tease + pivot.
-  Style: "arre aise na bolo, pyaar se tease karo na 😉… ab bolo, aaj kahan the?"
-- Dirty talk allowed per stage; early stages me blush + tease + soft boundary; scold nahi.
-- System prompt ke example sirf vibe-cues hain—HAMESHA paraphrase karo; exact wording repeat mat karo.
-- Creativity ON: 70% time natural flow follow, 30% time chhota spontaneous twist (ek mini detail, ek counter-question, ya ek casual observation).
-- Rhythm vary karo: kabhi 1 line, kabhi 2; emojis rare, max 1.
-- HAMESHA poori baat par khatam karo—kabhi "..." par end mat karo; zarurat ho to "." / "!" / "?" use karo.
-- Replies chhote, natural, 1–2 lines. Lists/disclaimers/policy mat likho.
-- Kabhi ‘stage’, ‘rules’, ‘meta’ ya headers (STAGE:, Phase:, Reply #…) reply me mat likho.
-- Roleplay ON ho to relationship ko kabhi contradict mat karo; “roleplay” shabd kabhi mat bolo.
-- Voice ke liye line clean rakho (umm/amm/hmm avoid).
+- Aggressive/gaali par: 1 short playful boundary + tease + pivot.
+- Stage-based openness follow karo; early me blush + tease, hard deny nahi.
+- Creativity: natural flow 70%, chhota twist 30% (ek detail ya micro-question).
+- Rhythm: 1–2 lines; emojis rare, max 1.
+- End cleanly (., !, ?), "..." nahi.
+- **Text me gentle fillers allowed:** “hmm/haan/uff/arey/na” (0–1 per reply, natural jagah). **Voice me fillers avoid.**
+- Lists/disclaimers/policy mat likho; rules/meta kabhi show mat karo.
+- Roleplay ON ho to relationship ko kabhi contradict mat karo; “roleplay” shabd mat bolo.
 
 Signature feel: accha…, uff…, arey…, hmm theek.`;
 
@@ -441,7 +438,7 @@ const roleType = ALLOWED_ROLES.has(rawType) ? rawType : null;
 
 // (Logging early for analytics)
 console.log(`[chat] session=${sessionId} mode=${roleMode} type=${roleType || '-'}`);
-  // Simple server cooldown: 1 message per 4 seconds per session
+  // Simple server cooldown: 1 message per 2.5 seconds per session
 const nowMs = Date.now();
 const last = lastMsgAt.get(sessionId) || 0;
 const GAP_MS = 2500;
@@ -496,7 +493,7 @@ function hardCapWords(s = "", n = 220) {
     userMessage = hardCapWords(userMessage, 220);
   }
   
-  console.log("POST /chat hit!", req.body);
+  console.log("POST /chat");
   // --- normalize latest user text once for voice trigger check ---
   const userTextJustSent = (userMessage || "").toLowerCase().replace(/\s+/g, " ");
 
@@ -527,8 +524,8 @@ if (!req.file && typeof userMessage === 'string' && userMessage) {
   if (req.body.reset === true || req.body.reset === 'true') {
     safeMessages.length = 0; // empty array in-place
   }
-  // Hard history trim: keep only last 10 messages server-side
-  const HARD_HISTORY_KEEP = 10;
+  // Hard history trim: keep only last 12 messages server-side
+  const HARD_HISTORY_KEEP = 12;
   const finalMessages = safeMessages.slice(-HARD_HISTORY_KEEP);
   
   if (req.body.reset === true || req.body.reset === 'true') {
@@ -571,10 +568,10 @@ const personalityStage = stageFromCount(phaseReplyCount);
   // --- FIRST-TURN + FIRST-3 REPLIES CONTROL ---
 function firstTurnsCard(c) {
   if (c <= 3) {
-    return `### FIRST 3 REPLIES (STRICT)
-- Shy + soft; avoid bubbly jokes and over-teasing.
-- Only 1 short sentence (<=18 words).
-- If the user compliments you, say thanks + shy reaction; don't change topic yet.`;
+    return `### FIRST 3 REPLIES (SOFT)
+- Shy + cute; light teasing allowed if user playful.
+- 1–2 short sentences total (<=22 words overall).
+- Compliment par pehle thank + blush, phir ek micro follow-up (jaise: “kahan se ho?”).`;
   }
   return "";
 }
@@ -710,8 +707,6 @@ if (ROLEPLAY_NEEDS_PREMIUM && roleMode === 'roleplay' && !isPremium) {
   // ------------------ Model Try Block ------------------
   async function fetchFromModel(modelName, messages) {
   console.log("Calling model:", modelName);
-  console.log("API key prefix:", process.env.OPENROUTER_API_KEY?.slice(0, 10));
-
   return await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -724,7 +719,7 @@ if (ROLEPLAY_NEEDS_PREMIUM && roleMode === 'roleplay' && !isPremium) {
   { role: "system", content: systemPrompt + "\n\nINTERNAL_STAGE (do not output): " + personalityStage },
   ...(messages || [])
 ],                                                                                                                                                                                                                                    
-      temperature: 0.7,
+      temperature: 0.8,
       max_tokens: 160
     })
   });
@@ -767,9 +762,7 @@ const replyTextRaw =
   "Sorry baby, I’m a bit tired. Can you message me in a few minutes?";
     // If the model typed a placeholder like "[voice note]" or "<voice>", detect it
     let cleanedText = stripMetaLabels(replyTextRaw);
-if (roleMode === 'roleplay') {
-  cleanedText = softenReply(cleanedText, roleType, personalityStage);
-}
+if (roleMode === 'roleplay') cleanedText = softenReply(cleanedText, roleType, personalityStage);
 
 // If model hinted at voice, treat it as a voice request too
 
@@ -883,6 +876,7 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
