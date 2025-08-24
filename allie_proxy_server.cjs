@@ -243,9 +243,17 @@ async function generateShraddhaVoice(text, filePath) {
 
   if (!response.ok) throw new Error("TTS failed: " + response.statusText);
 
-  // Write mp3 file to disk (works with native fetch / node-fetch v3)
-const buf = Buffer.from(await response.arrayBuffer());
-await fs.promises.writeFile(filePath, buf);
+  // Write mp3 file to disk (works with node-fetch v2 and v3/native)
+  let buf;
+  if (typeof response.buffer === 'function') {
+    // node-fetch v2
+    buf = await response.buffer();
+  } else {
+    // native fetch / node-fetch v3
+    const ab = await response.arrayBuffer();
+    buf = Buffer.from(ab);
+  }
+  await fs.promises.writeFile(filePath, buf);
 
   return filePath; // Return the saved mp3 path
 }
@@ -642,7 +650,18 @@ if (ROLEPLAY_NEEDS_PREMIUM && roleMode === 'roleplay' && !isPremium) {
   messages = [];
   const recent = errorTimestamps.filter(t => Date.now() - t < 10 * 60 * 1000);
   if (recent.length >= 5) {
-    await fetch(`${selfBase(req)}/report-error`, { ... });
+    await fetch(`${selfBase(req)}/report-error`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        error: {
+          message: "More than 5 input errors in 10 minutes.",
+          stack: "Invalid input format",
+        },
+        location: "/chat route",
+        details: "Too many input format issues (tolerated by server)"
+      })
+    });
     errorTimestamps.length = 0;
   }
 }
@@ -857,4 +876,5 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
