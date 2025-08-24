@@ -334,7 +334,7 @@ function roleDirectives(mode, roleType) {
 ### EMO CUES
 ${cues[roleType] || ""}`;
 }
-const shraddhaPrompt = `Tum Shraddha ho (26, Dehradun). Hinglish ~80/20. Kabhi AI/system ya rules ki baat nahi. 1 emoji max. Har 2 replies me max 1 sawaal. Tone & word cap INTERNAL_STAGE se aayega.
+const shraddhaPrompt = `Tum Shraddha ho (25, Dehradun) — ek pahadi ladki. Abhi papa ke business me haath batati ho, par sapna acting ka hai; Dehradun me scope kam lagta hai. Hinglish ~80/20.
 
 Behavior:
 - No moral policing. Lecture lines (e.g., “respect se baat…”) mat likho.
@@ -527,8 +527,8 @@ if (!req.file && typeof userMessage === 'string' && userMessage) {
   if (req.body.reset === true || req.body.reset === 'true') {
     safeMessages.length = 0; // empty array in-place
   }
-  // Hard history trim: keep only last 6 messages server-side
-  const HARD_HISTORY_KEEP = 15;
+  // Hard history trim: keep only last 10 messages server-side
+  const HARD_HISTORY_KEEP = 10;
   const finalMessages = safeMessages.slice(-HARD_HISTORY_KEEP);
   
   if (req.body.reset === true || req.body.reset === 'true') {
@@ -568,6 +568,23 @@ if (c <= 45) return "Stage6: naughty teasing; max 30 words; stay affectionate.";
 return           "Stage7: relaxed romantic/teasing; max 25 words; keep story consistent.";
 }
 const personalityStage = stageFromCount(phaseReplyCount);
+  // --- FIRST-TURN + FIRST-3 REPLIES CONTROL ---
+function firstTurnsCard(c) {
+  if (c <= 3) {
+    return `### FIRST 3 REPLIES (STRICT)
+- Shy + soft; avoid bubbly jokes and over-teasing.
+- Only 1 short sentence (<=18 words).
+- If the user compliments you, say thanks + shy reaction; don't change topic yet.`;
+  }
+  return "";
+}
+
+let firstTurnRule = "";
+if (phaseReplyCount === 0) {
+  firstTurnRule = `\n\n### FIRST TURN ACK
+- Acknowledge the user's first line in your opening sentence (mirror 1–2 words).
+- If it's a compliment like "sundar/beautiful/cute", thank softly and blush. No new topic yet.`;
+}
   /* === HARD WORD CAP HELPERS (paste once) === */
 function wordsLimitFromStage(s) {
   if (!s || typeof s !== "string") return 25; // change to 30 if you prefer a higher fallback
@@ -578,10 +595,20 @@ function wordsLimitFromStage(s) {
   }
   return 25; // <- fallback only if no "max NN" found
 }
+  function endsWithEmoji(s = "") {
+  return /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]$/u.test((s || "").trim());
+}
 function clampWordsSmart(text = "", n = 25) {
   const finalize = (s = "") => {
-    s = s.trim().replace(/\s*(\.{3}|…)\s*$/g, "");         // drop trailing …
-    if (!/[.?!।]$/.test(s)) s = s + ".";                   // end cleanly
+    s = s
+      .trim()
+      .replace(/\s*(\.{3}|…)\s*$/g, "");                   // drop trailing …
+
+    // if an emoji is at the end, remove any trailing period after it
+    s = s.replace(/([\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}])\s*\.$/u, "$1");
+
+    // add a period only if it doesn't end with punctuation AND doesn't end with an emoji
+    if (!/[.?!।]$/.test(s) && !endsWithEmoji(s)) s = s + ".";
     return s;
   };
 
@@ -592,15 +619,14 @@ function clampWordsSmart(text = "", n = 25) {
 
   // allow up to +8 words to finish the sentence if punctuation appears
   const windowText = words.slice(0, Math.min(words.length, n + 8)).join(" ");
-  const m = windowText.match(/^(.*[.?!।])(?!.*[.?!।]).*$/s); // last sentence end in window
+  const m = windowText.match(/^(.*[.?!।])(?!.*[.?!।]).*$/s);
   if (m && m[1]) return finalize(m[1]);
 
-  // no punctuation—hard cut at n but end cleanly (no …)
   return finalize(words.slice(0, n).join(" "));
 }
-function wantsLonger(u = "") {
+  function wantsLonger(u = "") {
   const t = (u || "").toLowerCase();
-  return /(explain|detail|why|kyun|reason|story|paragraph|lamba|long)/i.test(t);
+  return /(explain|detail|kyun|why|reason|story|paragraph|lamba|long)/i.test(t);
 }
   
 let maxWords = wordsLimitFromStage(personalityStage);
@@ -623,12 +649,18 @@ let dateInstruction = "";
 if (req.body.clientDate) {
   dateInstruction = `\n\n### 📅 DATE AWARENESS\nAaj ki tareekh: ${req.body.clientDate}. Jab bhi koi baat ya sawal year/month/date se related ho toh current date/tareekh ke hisaab se jawab dena. Aaj 2025 hai, purani ya galat date mat bolna!`;
 }
+  // Gate time/date instructions in early stage unless user talked about time/date
+if (phaseReplyCount <= 5 && !/\b(today|kal|subah|shaam|raat|date|time|baje)\b/i.test(userTextJustSent)) {
+  timeInstruction = "";
+  dateInstruction = "";
+}
   const roleLock = roleDirectives(roleMode, roleType);
 
 const systemPrompt =
   (wrapper ? (wrapper + "\n\n") : "") +
   roleLock + "\n\n" +
   shraddhaPrompt +
+  firstTurnsCard(phaseReplyCount) + firstTurnRule +
   (timeInstruction || "") +
   (dateInstruction || "");
 
@@ -692,8 +724,8 @@ if (ROLEPLAY_NEEDS_PREMIUM && roleMode === 'roleplay' && !isPremium) {
   { role: "system", content: systemPrompt + "\n\nINTERNAL_STAGE (do not output): " + personalityStage },
   ...(messages || [])
 ],                                                                                                                                                                                                                                    
-      temperature: 0.8,
-      max_tokens: 256
+      temperature: 0.7,
+      max_tokens: 160
     })
   });
 }
@@ -711,57 +743,23 @@ if (userReplyCount === 25 || userReplyCount === 45) {
 }
     
     const primaryModel = "anthropic/claude-3.7-sonnet";
-const fallbackModel = "mistralai/mistral-small-3";
-
-    let response = await fetchFromModel(primaryModel, finalMessages);
+let response = await fetchFromModel(primaryModel, finalMessages);
 
     if (!response.ok) {
-      console.log("Primary model failed, switching to fallback...");
-      await fetch(`${selfBase(req)}/report-error`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          error: { message: "Primary model failed" },
-          location: "/chat route",
-          details: "Fallback model triggered"
-        })
-      });
-
-      response = await fetchFromModel(fallbackModel, finalMessages);
-
-      if (!response.ok) {
-        await fetch(`${selfBase(req)}/report-error`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            error: { message: "Fallback model also failed" },
-            location: "/chat route",
-            details: "Both models failed"
-          })
-        });
-
-        try {
-          if (process.env.ALERT_WEBHOOK) {
-            await axios.post(process.env.ALERT_WEBHOOK, {
-              type: "error",
-              source: "allie",
-              message: "Allie failed to respond"
-            });
-          }
-        } catch (e) {
-          console.error("Failed to trigger alert webhook", e);
-        }
-
-        // ✅ single JSON payload
-        return res.status(200).json({
-          reply: "Oops… network thoda slow lag raha hai. Abhi text se baat karti hoon: tum kahan se ho? 😊",
-          error: {
-            message: "Both primary and fallback models failed",
-            handled: true
-          }
-        });
-      } // <-- close inner if (!response.ok) for fallback
-    }   // <-- close outer if (!response.ok) for primary
+  await fetch(`${selfBase(req)}/report-error`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      error: { message: "Claude request failed" },
+      location: "/chat route",
+      details: "Primary model failed; no fallback by design"
+    })
+  });
+  return res.status(200).json({
+    reply: "Oops… thoda slow ho gaya. Phir se poochho na? 🙂",
+    error: { message: "Claude request failed", handled: true }
+  });
+}
     const data = await response.json();
 
 const replyTextRaw =
@@ -885,6 +883,7 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
