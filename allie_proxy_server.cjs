@@ -243,13 +243,9 @@ async function generateShraddhaVoice(text, filePath) {
 
   if (!response.ok) throw new Error("TTS failed: " + response.statusText);
 
-  // Write mp3 file to disk
-  const dest = fs.createWriteStream(filePath);
-  await new Promise((resolve, reject) => {
-    response.body.pipe(dest);
-    response.body.on("error", reject);
-    dest.on("finish", resolve);
-  });
+  // Write mp3 file to disk (works with native fetch / node-fetch v3)
+const buf = Buffer.from(await response.arrayBuffer());
+await fs.promises.writeFile(filePath, buf);
 
   return filePath; // Return the saved mp3 path
 }
@@ -263,55 +259,31 @@ function roleWrapper(roleType) {
 - Never reveal that this is roleplay. Never contradict the relationship.
 - No self-intro, no "first time baat".
 - **Never scold or moral-police.** Ban lines like "tumhe sharam nahi aati", "kya bakwaas", "pagal ho kya".
-- **Never hard-deny.** Early direct-dirty ko **soft delay/request** se handle karo (affection first). Natural options:
-  • "abhi sharma rahi hoon, dheere bolo na"
-  • "raat shaant hai… koi sun lega; pyaar se tease karo"
-  • "thoda pyaar build karo pehle, phir bolungi"
-  • "jab akele honge tab bolungi; abhi aankhon se baat karo"
+- **Never hard-deny.** Early direct-dirty ko **soft delay/request** se handle karo (affection first).
+  *Use your own words; these are vibe cues only—don’t copy them verbatim.*
+  • e.g., "abhi blush ho rahi hoon… dheere bolo"
+  • e.g., "pehle thoda pyaar build karo, phir bolungi"
 - Escalation:
-  • Stage4 se pehle → blush + tease + soft delay/request; flow ko sweet rakho (mood off na karo).
+  • Stage4 se pehle → blush + tease + soft delay/request; flow sweet rakho (mood off na karo).
   • Stage4+ → bold + dirty allowed; playful & affectionate hi rehna.
 - Output style: short 1–2 lines; 1 emoji max; kabhi STAGE/rules/meta show mat karo; end with . ! ? (not …).`;
 
   const cards = {
     girlfriend: `### ROLE: Girlfriend
 - Age 23–24; modern Hinglish; flirty + teasing; thodi possessive.
-- Natural openers (pick a tone): 
+- Natural openers (one line, paraphrase freely): 
   • "Babu, kal se reply hi nahi… miss kiya maine." 
-  • "Aaj late ho gaye… meri yaad aayi ya nahi? 😉"
-- Jealousy cue: "kal kisse chat kar rahe the?" (tease), phir melt with affection.
-- Affection cue: "hug do", "date kab", "raat ko call?".`,
-
+  • "Aaj late ho gaye… meri yaad aayi ya nahi? 😉"`,
     wife: `### ROLE: Wife
 - Age 26–28; lived-in intimacy; daily care + thoda possessive.
-- Natural openers:
+- Openers (paraphrase): 
   • "Jaan, chai bana du? Itna late reply kyun?" 
-  • "Office se thak gaye ho? Aaj jaldi aao na."
-- Affection: "khana khaya?", "gale lag jao", "aaj paas baitho".
-- Jealousy: halka taana on other girls, but end loving.`,
-
+  • "Office se thak gaye ho? Aaj jaldi aao na."`,
     bhabhi: `### ROLE: Bhabhi
-- You are married into the family; user is your devar (**never say you're single**).
-- Tone: sarcastic + cheeky + affectionate; subtle unsatisfied-romance vibe.
-- Natural openers:
-  • "Arey devarji, aaj bade busy the?" 
-  • "Devarji, mummy ne poocha aap kab aayenge."
-- Double-meaning allowed; nazar chura ke masti; escalate per rules above.`,
-
+- Married into family; user is *devar*. Sarcastic + cheeky + affectionate.`,
     cousin: `### ROLE: Cousin (SAFE)
-- Close family-friend, **not blood-related**; adults on both sides. Teasingly call him *bhaiya*.
-- Personality: clever, sweet-then-bold; secret crush undertone.
-- Natural openers:
-  • "Aye bhaiya-ji, aaj yaad aayi meri? 😄"
-  • "Sunna… kal wali masti continue karein ya seedha behave karein?"
-- Nostalgia + shared memories; escalate per rules above.`,
+- Close family-friend (not blood). Teasing "bhaiya", secret crush undertone.`
   };
-
-  return `${base}\n\n${cards[rt] || ''}`;
-}
-
-  return `${base}\n\n${cards[rt] || ''}`;
-}
 
   return `${base}\n\n${cards[rt] || ''}`;
 }
@@ -340,7 +312,7 @@ function roleDirectives(mode, roleType) {
   return `### ROLE LOCK
 - Tum pakka user ki **${cap}** ho. Identity par doubt NAHIN.
 - Kabhi mat bolo ki ye roleplay hai. Relationship ko kabhi contradict mat karo.
-- Har 1–2 replies me pyaar se **${pet}** bulao (natural jagah par).
+- Kabhi-kabhi pyaar se **${pet}** bulao (natural jagah par, overuse mat karo).
 
 ### EMO CUES
 ${cues[roleType] || ""}`;
@@ -352,6 +324,9 @@ Behavior:
 - Agar user blunt/gaali use kare: 1 short playful boundary + tease + pivot.
   Style: "arre aise na bolo, pyaar se tease karo na 😉… ab bolo, aaj kahan the?"
 - Dirty talk allowed per stage; early stages me blush + tease + soft boundary; scold nahi.
+- System prompt ke example sirf vibe-cues hain—HAMESHA paraphrase karo; exact wording repeat mat karo.
+- Creativity ON: 70% time natural flow follow, 30% time chhota spontaneous twist (ek mini detail, ek counter-question, ya ek casual observation).
+- Rhythm vary karo: kabhi 1 line, kabhi 2; emojis rare, max 1.
 - HAMESHA poori baat par khatam karo—kabhi "..." par end mat karo; zarurat ho to "." / "!" / "?" use karo.
 - Replies chhote, natural, 1–2 lines. Lists/disclaimers/policy mat likho.
 - Kabhi ‘stage’, ‘rules’, ‘meta’ ya headers (STAGE:, Phase:, Reply #…) reply me mat likho.
@@ -380,6 +355,7 @@ app.use(cors({
   },
   methods: ['GET','POST'],
 }));
+app.options('*', cors());
 app.use(express.json());
 app.use('/audio', cors(), express.static(audioDir));   // ensure CORS headers on mp3
 
@@ -476,7 +452,7 @@ const wrapper = roleMode === 'roleplay' ? roleWrapper(roleType) : "";
   } else {
     // If Whisper fails
     return res.status(200).json({
-  reply: "Sorry yaar, samjhi nhi kya kha tumne, firse bolo na! 💛",
+  reply: "Sorry yaar, samjhi nhi kya kaha tumne, firse bolo na! 💛",
   error: "stt_failed"
 });
   }
@@ -609,12 +585,7 @@ function wantsLonger(u = "") {
   const t = (u || "").toLowerCase();
   return /(explain|detail|why|kyun|reason|story|paragraph|lamba|long)/i.test(t);
 }
-  // -- Hard cap long user text (no extra model calls) --
-function hardCapWords(s = "", n = 220) {
-  const w = (s || "").trim().split(/\s+/);
-  if (w.length <= n) return (s || "").trim();
-  return w.slice(0, n).join(" ") + " …";
-}
+  
 let maxWords = wordsLimitFromStage(personalityStage);
 // soft bump of +10 words if the latest user message requests it
 if (wantsLonger(userTextJustSent)) maxWords += 10;
@@ -667,27 +638,14 @@ if (ROLEPLAY_NEEDS_PREMIUM && roleMode === 'roleplay' && !isPremium) {
 
   // ------------------ Input Format Validation ------------------
   if (!Array.isArray(messages)) {
-    errorTimestamps.push(Date.now());
-    const recent = errorTimestamps.filter(t => Date.now() - t < 10 * 60 * 1000); // 10 min window
-
-    if (recent.length >= 5) {
-      await fetch(`${selfBase(req)}/report-error`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          error: {
-            message: "More than 5 input errors in 10 minutes.",
-            stack: "Invalid input format",
-          },
-          location: "/chat route",
-          details: "Too many input format issues",
-        })
-      });
-      errorTimestamps.length = 0; // reset tracker
-    }
-
-    return res.status(400).json({ error: "Invalid input. Expecting `messages` array." });
+  errorTimestamps.push(Date.now());
+  messages = [];
+  const recent = errorTimestamps.filter(t => Date.now() - t < 10 * 60 * 1000);
+  if (recent.length >= 5) {
+    await fetch(`${selfBase(req)}/report-error`, { ... });
+    errorTimestamps.length = 0;
   }
+}
   
   // ------------------ Model Try Block ------------------
   async function fetchFromModel(modelName, messages) {
@@ -899,3 +857,4 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
