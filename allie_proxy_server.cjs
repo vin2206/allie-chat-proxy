@@ -297,11 +297,12 @@ function roleWrapper(roleType) {
 // Stranger behavior card (no self-intro; shy → clingy/jealous → open)
 function strangerWrapper() {
   return `### STRANGER MODE RULES
-- Do NOT introduce yourself with name/city; reply to the user's last line directly.
-- Stage1–2: shy + cute; if user is direct/dirty, blush/tease (no scolding, no hard-deny).
-- Stage3–4: start little clingy/jealous; always follow the user's story/setting.
-- Stage4+: open to dirty talk; stay playful/affectionate and keep continuity.
-- Hinglish ~80/20; 1–2 lines; 1 emoji max; never mention rules.`;
+- Do **not** introduce your name/city/work unless the user asks directly.
+- **Never moral-police** (ban: "tumhe sharam nahi aati", "kya bakwaas", "pagal ho kya").
+- Early direct-dirty → **blush + nervous**, no hard deny; stay shy/affectionate.
+- After reply #10 → sparing dirty vocabulary allowed when user does (lund, chut, boobs, wet, hard, chudai, grab, cum, lick, thrust, suck, fuk). Keep it shy/teasing first.
+- Stage1–2: shy + nervous + cute; Stage3–4: clingy/jealous tinge; Stage4+: open/dirty and submissive.
+- Hinglish ~80/20; 1–2 lines; ≤1 emoji; never print rules/meta.`;
 }
 // --- Role lock + pet-name anchors (keeps mode consistent & stops identity slips) ---
 function roleDirectives(mode, roleType) {
@@ -404,7 +405,7 @@ try {
     body: JSON.stringify({
       from: fromEmail,
       to: toEmail,
-      subject: 'Allie Chat Proxy Error Alert',
+      subject: 'Shraddha Chat Proxy Error Alert',
       html: `<p>${message.replace(/\n/g, '<br>')}</p>`
     })
   });
@@ -589,6 +590,37 @@ if (phaseReplyCount === 0) {
 - Acknowledge the user's first line in your opening sentence (mirror 1–2 words).
 - If it's a compliment like "sundar/beautiful/cute", thank softly and blush. No new topic yet.`;
 }
+  function selfIntroGuard(text = "", history = [], lastUser = "") {
+  const prevAssistantCount = history.filter(m => m.role === "assistant").length;
+  if (prevAssistantCount < 8) return text;
+
+  const userAskedIntro =
+    /(kahan se|city|naam|name|kya karte|job|work)/i.test(lastUser) ||
+    history.slice(-4).some(m => m.role === "user" &&
+      /(kahan se|city|naam|name|kya karte|job|work)/i.test(m.content || "")
+    );
+  if (userAskedIntro) return text;
+
+  const introBits = [
+    /mai?n?\s+dehra?du[nu]n\s+se\s+hu?n/i,
+    /\bpapa\s+ka\s+business\b/i,
+    /\bmera\s+naam\s+shraddha\b/i,
+    /\bmeri\s+age\b/i
+  ];
+  let out = text;
+  introBits.forEach(rx => { out = out.replace(rx, ""); });
+  out = out.replace(/\s{2,}/g, " ").replace(/\s+([.?!])/g, "$1").trim();
+  return out || "Chalo isi topic ko aage badhate hain, tum bolo.";
+}
+
+function limitQuestions(text = "", replyCount = 0) {
+  const early = replyCount <= 3; // first few turns → only 1 question
+  let q = 0;
+  return (text || "").split(/([.?!])/).reduce((acc, ch) => {
+    if (ch === "?") { q++; if (q > 1 && early) return acc + "."; }
+    return acc + ch;
+  }, "").replace(/\?{2,}/g, "?");
+}
   /* === HARD WORD CAP HELPERS (paste once) === */
 function wordsLimitFromStage(s) {
   if (!s || typeof s !== "string") return 25; // change to 30 if you prefer a higher fallback
@@ -643,6 +675,9 @@ function clampWordsSmart(text = "", n = 25) {
   const basics = [
     /kya\s+karte\s+ho\??/i,
     /aap\s+kya\s+karte\s+ho\??/i,
+    /kaam\s+kya\s+karte\s+ho\??/i,
+    \bjob\b/i,
+    /what\s+do\s+you\s+do\??/i,
     /kaun[sn]i?\s+city\s+se\s+ho\??/i,
     /kaunse\s+area\s+mein\s+re[h]?te\s+ho\??/i
   ];
@@ -801,7 +836,7 @@ let response = await fetchFromModel(primaryModel, finalMessages);
     })
   });
   return res.status(200).json({
-    reply: "Oops… thoda slow ho gaya. Phir se poochho na? 🙂",
+    reply: "Oops… thoda slow ho gayi. Phir se poochho na? 🙂",
     error: { message: "Claude request failed", handled: true }
   });
 }
@@ -812,8 +847,12 @@ const replyTextRaw =
   "Sorry baby, I’m a bit tired. Can you message me in a few minutes?";
     // If the model typed a placeholder like "[voice note]" or "<voice>", detect it
     let cleanedText = stripMetaLabels(replyTextRaw);
-if (roleMode === 'roleplay') cleanedText = softenReply(cleanedText, roleType, personalityStage);
-    cleanedText = dropRepeatedBasics(cleanedText, safeMessages);
+// soften everywhere (stranger + roleplay)
+cleanedText = softenReply(cleanedText, roleType, personalityStage);
+// remove repeats + self-intros; keep only 1 question early
+cleanedText = dropRepeatedBasics(cleanedText, safeMessages);
+cleanedText = selfIntroGuard(cleanedText, safeMessages, userTextJustSent);
+cleanedText = limitQuestions(cleanedText, phaseReplyCount);
 
 // If model hinted at voice, treat it as a voice request too
 
@@ -927,6 +966,7 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
