@@ -673,14 +673,14 @@ function clampWordsSmart(text = "", n = 25) {
 
   // “Basics” we don’t want to repeat late in the chat
   const basics = [
-    /kya\s+karte\s+ho\??/i,
-    /aap\s+kya\s+karte\s+ho\??/i,
-    /kaam\s+kya\s+karte\s+ho\??/i,
-    \bjob\b/i,
-    /what\s+do\s+you\s+do\??/i,
-    /kaun[sn]i?\s+city\s+se\s+ho\??/i,
-    /kaunse\s+area\s+mein\s+re[h]?te\s+ho\??/i
-  ];
+  /kya\s+karte\s+ho\??/i,
+  /aap\s+kya\s+karte\s+ho\??/i,
+  /kaam\s+kya\s+karte\s+ho\??/i,
+  /\bjob\b/i,
+  /what\s+do\s+you\s+do\??/i,
+  /kaun[sn]i?\s+city\s+se\s+ho\??/i,
+  /kaunse\s+area\s+mein\s+re[h]?te\s+ho\??/i
+];
 
   // Teasing markers → if present in the same sentence, don't scrub it
   const teaseCues = [
@@ -966,6 +966,7 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
