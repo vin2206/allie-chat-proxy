@@ -54,8 +54,15 @@ async function transcribeWithWhisper(audioPath) {
 
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
 const SHRADDHA_VOICE_ID = "WnFIhLMD7HtSxjuKKrfY"; // <--- Paste gargi's voice id here
+// Comma-separated owner emails (fallback includes Vinay)
+const OWNER_EMAILS = new Set(
+  (process.env.OWNER_EMAILS || "vinayvedic23@gmail.com")
+    .split(",")
+    .map(s => s.trim().toLowerCase())
+    .filter(Boolean)
+);
 // Server-side roleplay gate + whitelist
-const ROLEPLAY_NEEDS_PREMIUM = process.env.ROLEPLAY_NEEDS_PREMIUM === 'true';
+const ROLEPLAY_NEEDS_PREMIUM = (process.env.ROLEPLAY_NEEDS_PREMIUM || 'true') === 'true';
 const ALLOWED_ROLES = new Set(['wife','girlfriend','bhabhi','cousin']);
 // -------- Voice usage limits (per session_id, reset daily) --------
 const VOICE_LIMITS = { free: 2, premium: 8 };
@@ -147,6 +154,32 @@ function softenReply(text = "", roleType = "", stage = "") {
   t = t.replace(/\b(sharam|bakwaas|paagal|gandi|ghatiya)\b/gi, "naughty");
 
   return t.trim();
+}
+// --- shy filler + feminine tone helpers (text-only) ---
+function ensureShyFiller(text = "") {
+  let t = String(text || "").trim();
+  if (!t) return t;
+
+  // already has a shy filler? keep
+  if (/\b(amm+|um+|hmm+|haan+|uff+)\b/i.test(t)) return t;
+
+  // don't inject if it starts with a quote/bracket/emoji/markdown
+  if (/^[\[\(<"“'‘#*]/.test(t)) return t;
+
+  // gentle, short filler
+  return "amm, " + t;
+}
+
+function feminizeTone(text = "") {
+  let t = String(text || "");
+  // very conservative tweaks; avoid over-correcting
+  t = t.replace(/\baccha\b/gi, "acchi");
+  t = t.replace(/\bachha\b/gi, "acchi");
+  t = t.replace(/\bhun\b/gi, "hoon");
+  // common masculine → feminine verbs (safe-ish)
+  t = t.replace(/\bkarunga\b/gi, "karungi");
+  t = t.replace(/\bbolunga\b/gi, "bolungi");
+  return t;
 }
 // -------- Hinglish prep for TTS (more natural pacing) --------
 function prepHinglishForTTS(text) {
@@ -340,7 +373,7 @@ Behavior:
 - No moral policing. Lecture lines (e.g., “respect se baat…”) mat likho. reply sweet + shy on dirty words. 
 - make starting conversation interactive but shyly, ask questions ongoing topic only. no random questions.
 - Aggressive/gaali par: 1 short playful boundary + tease.
-- Stage-based openness follow karo; early me blush + tease, hard deny nahi.
+- Stage-based openness follow karo; early me shy + nervous, hard deny nahi.
 - Rhythm: 1–2 lines; emojis max 1 each line.
 - End cleanly (., !, ?), "..." nahi.
 - **Text me gentle fillers allowed:** “hmm/haan/uff/amm” (0–1 per reply, natural jagah). **Voice me fillers avoid.**
@@ -746,10 +779,9 @@ const systemPrompt =
   (timeInstruction || "") +
   (dateInstruction || "");
 
-let isPremium = req.body.isPremium || false;
-if (req.body.ownerKey === "unlockvinay1236") {
-  isPremium = true; // Owner always gets unlimited access
-}
+// Owner/premium by email — no magic codes
+const userEmail = String(req.body.userEmail || req.get('x-user-email') || "").toLowerCase();
+let isPremium = OWNER_EMAILS.has(userEmail) || (req.body.isPremium === true);
 
 if (!isPremium && userReplyCount >= 10) {
 
@@ -853,6 +885,11 @@ cleanedText = softenReply(cleanedText, roleType, personalityStage);
 cleanedText = dropRepeatedBasics(cleanedText, safeMessages);
 cleanedText = selfIntroGuard(cleanedText, safeMessages, userTextJustSent);
 cleanedText = limitQuestions(cleanedText, phaseReplyCount);
+    // Stranger early: softly inject filler + feminine tone (text path)
+if (roleMode === 'stranger' && phaseReplyCount <= 5) {
+  cleanedText = feminizeTone(cleanedText);
+  cleanedText = ensureShyFiller(cleanedText);
+}
 
 // If model hinted at voice, treat it as a voice request too
 
@@ -966,6 +1003,7 @@ app.get('/test-key', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
