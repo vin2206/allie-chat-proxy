@@ -8,6 +8,18 @@ const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
 const FormData = require('form-data');
+const crypto = require('crypto'); // add
+// Razorpay + URLs  (keep names consistent everywhere)
+const RAZORPAY_KEY_ID          = process.env.RAZORPAY_KEY_ID;
+const RAZORPAY_KEY_SECRET      = process.env.RAZORPAY_KEY_SECRET;
+const RAZORPAY_WEBHOOK_SECRET  = process.env.RAZORPAY_WEBHOOK_SECRET;
+const FRONTEND_URL             = process.env.FRONTEND_URL || 'https://chat.buddyby.com';
+
+// Packs (authoritative on server)
+const PACKS = {
+  daily:  { amount: 49,  coins: 420,  ms: 24*60*60*1000 },
+  weekly: { amount: 199, coins: 2000, ms: 7*24*60*60*1000 }
+};
 
 const audioDir = path.join(__dirname, 'audio');
 if (!fs.existsSync(audioDir)) fs.mkdirSync(audioDir);
@@ -25,6 +37,55 @@ const storage = multer.diskStorage({
   }
 });
 const upload = multer({ storage: storage });
+// --- simple JSON-backed wallet ---
+const dataDir   = path.join(__dirname, 'data');
+if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir);
+const walletFile = path.join(dataDir, 'wallet.json');
+
+function readJSON(p){ try { return JSON.parse(fs.readFileSync(p,'utf8')); } catch { return {}; } }
+function writeJSON(p,obj){ fs.writeFileSync(p, JSON.stringify(obj,null,2)); }
+
+const walletDB = readJSON(walletFile);
+
+function getUserIdFrom(req) {
+  const email = String(req.body?.userEmail || req.query?.email || req.get('x-user-email') || '').toLowerCase();
+  const sub   = String(req.body?.userSub   || req.query?.sub   || '').trim();
+  return sub || email; // prefer Google sub if present
+}
+
+function getWallet(userId){
+  return walletDB[userId] || { coins: 0, expires_at: 0, txns: [] };
+}
+function saveWallet(userId, w){
+  walletDB[userId] = w;
+  writeJSON(walletFile, walletDB);
+}
+
+function makeRef(userId, pack){ return `${pack}|${userId}`; }
+function parseRef(ref) {
+  const [pack, ...rest] = String(ref||'').split('|');
+  return { pack, userId: rest.join('|') };
+}
+
+function creditPack(userId, pack, paymentId, linkId){
+  const def = PACKS[pack];
+  if (!def) return null;
+  const w = getWallet(userId);
+
+  // DEDUPE: avoid double credit on webhook retries
+  if (w.txns?.some(t => t.paymentId === paymentId || (linkId && t.linkId === linkId))) {
+    return { wallet: w, lastCredit: null, dedup: true };
+  }
+
+  const now = Date.now();
+  w.coins = (w.coins|0) + def.coins;
+  const base = Math.max(now, w.expires_at|0);
+  w.expires_at = base + def.ms;
+  const txn = { at: now, type: 'credit', pack, coins: def.coins, paymentId, linkId };
+  w.txns.push(txn);
+  saveWallet(userId, w);
+  return { wallet: w, lastCredit: txn };
+}
 // Whisper STT function
 async function transcribeWithWhisper(audioPath) {
   const form = new FormData();
@@ -411,6 +472,32 @@ app.use(cors({
   methods: ['GET','POST'],
 }));
 app.options('*', cors());
+// ---- Razorpay Webhook (must be ABOVE app.use(express.json())) ----
+app.post('/webhook/razorpay', express.raw({ type: 'application/json' }), (req, res) => {
+  try {
+    const signature = req.get('x-razorpay-signature') || '';
+    const expected = crypto.createHmac('sha256', RAZORPAY_WEBHOOK_SECRET)
+                           .update(req.body) // raw Buffer
+                           .digest('hex');
+    if (signature !== expected) {
+      return res.status(400).send('Invalid signature');
+    }
+
+    const event = JSON.parse(req.body.toString('utf8'));
+    if (event?.event === 'payment_link.paid') {
+      const link = event?.payload?.payment_link?.entity;
+      const ref  = link?.reference_id || '';
+      const { pack, userId } = parseRef(ref);
+      const paymentId = event?.payload?.payment?.entity?.id || '';
+      if (pack && userId) creditPack(userId, pack, paymentId, link?.id || '');
+    }
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('webhook error', e);
+    return res.status(200).end(); // avoid retry storms
+  }
+});
+// ---- END /webhook/razorpay ----
 app.use(express.json());
 app.use('/audio', cors(), express.static(audioDir));   // ensure CORS headers on mp3
 
@@ -779,9 +866,12 @@ const systemPrompt =
   (timeInstruction || "") +
   (dateInstruction || "");
 
-// Owner/premium by email — no magic codes
+// Owner/premium by email — plus wallet validity
 const userEmail = String(req.body.userEmail || req.get('x-user-email') || "").toLowerCase();
-let isPremium = OWNER_EMAILS.has(userEmail) || (req.body.isPremium === true);
+const userIdForWallet = getUserIdFrom(req);
+const w = getWallet(userIdForWallet);
+const isWalletActive = (w?.expires_at || 0) > Date.now();
+let isPremium = OWNER_EMAILS.has(userEmail) || isWalletActive;
 
 if (!isPremium && userReplyCount >= 10) {
 
@@ -999,20 +1089,76 @@ app.get('/test-key', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+// Create a Payment Link for a pack (Daily/Weekly)
+app.post('/buy/:pack', async (req, res) => {
+  const pack = String(req.params.pack || '').toLowerCase();
+  const def = PACKS[pack];
+  if (!def) return res.status(400).json({ ok:false, error:'bad_pack' });
 
+  const userId    = getUserIdFrom(req);
+  const userEmail = String(req.body?.userEmail || '').toLowerCase();
+  const returnUrl = String(req.body?.returnUrl || `${FRONTEND_URL}/payment/thanks`);
+
+  try {
+    const payload = {
+      amount: def.amount * 100,  // paise
+      currency: 'INR',
+      accept_partial: false,
+      description: `Shraddha ${pack} pack for ${userEmail || userId}`,
+      customer: userEmail ? { email: userEmail } : undefined,
+      notify: { sms: false, email: !!userEmail },
+      reference_id: makeRef(userId, pack),
+      callback_url: returnUrl,
+      callback_method: 'get'
+    };
+
+    const r = await axios.post(
+      'https://api.razorpay.com/v1/payment_links',
+      payload,
+      { auth: { username: RAZORPAY_KEY_ID, password: RAZORPAY_KEY_SECRET } }
+    );
+
+    return res.json({ ok:true, link_id: r.data.id, short_url: r.data.short_url });
+  } catch (e) {
+    console.error('buy link create failed', e?.response?.data || e.message);
+    return res.status(500).json({ ok:false, error:'create_failed' });
+  }
+});
+
+// Verify the Payment Link callback and credit coins
+app.post('/verify-payment-link', async (req, res) => {
+  try {
+    const { link_id, payment_id, reference_id, status, signature } = req.body || {};
+    if (!link_id || !payment_id || !reference_id || !status) {
+      return res.status(400).json({ ok:false, error:'missing_params' });
+    }
+
+    // Cross-check the Payment Link status on Razorpay
+    const r = await axios.get(
+      `https://api.razorpay.com/v1/payment_links/${link_id}`,
+      { auth: { username: RAZORPAY_KEY_ID, password: RAZORPAY_KEY_SECRET } }
+    );
+    if (!r?.data || r.data.status !== 'paid') {
+      return res.status(400).json({ ok:false, error:'not_paid' });
+    }
+
+    const { pack, userId } = parseRef(reference_id);
+    if (!pack || !userId) return res.status(400).json({ ok:false, error:'bad_ref' });
+
+    const { wallet, lastCredit } = creditPack(userId, pack, payment_id, link_id);
+    return res.json({ ok:true, wallet, lastCredit });
+  } catch (e) {
+    console.error('verify-payment-link failed', e?.response?.data || e.message);
+    return res.status(500).json({ ok:false, error:'verify_failed' });
+  }
+});
+
+// Wallet
+app.get('/wallet', (req, res) => {
+  const userId = getUserIdFrom(req);
+  const w = getWallet(userId);
+  res.json({ ok:true, wallet: w });
+});
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-
-
-
-
-
-
-
-
-
-
-
-
-
