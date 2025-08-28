@@ -14,6 +14,7 @@ const RAZORPAY_KEY_ID          = (process.env.RAZORPAY_KEY_ID || '').trim();
 const RAZORPAY_KEY_SECRET      = (process.env.RAZORPAY_KEY_SECRET || '').trim();
 const RAZORPAY_WEBHOOK_SECRET  = (process.env.RAZORPAY_WEBHOOK_SECRET || '').trim();
 const FRONTEND_URL             = process.env.FRONTEND_URL || 'https://chat.buddyby.com';
+const RZP_NOTIFY_EMAIL = (process.env.RZP_NOTIFY_EMAIL || 'false') === 'true';
 
 // Packs (authoritative on server)
 const PACKS = {
@@ -473,7 +474,7 @@ app.use(cors({
 }));
 app.options('*', cors());
 // ---- Razorpay Webhook (must be ABOVE app.use(express.json())) ----
-app.post('/webhook/razorpay', express.raw({ type: 'application/json' }), (req, res) => {
+app.post('/webhook/razorpay', express.raw({ type: 'application/json' }), async (req, res) => {
   try {
     const signature = req.get('x-razorpay-signature') || '';
     const expected = crypto.createHmac('sha256', RAZORPAY_WEBHOOK_SECRET)
@@ -491,6 +492,24 @@ app.post('/webhook/razorpay', express.raw({ type: 'application/json' }), (req, r
       const paymentId = event?.payload?.payment?.entity?.id || '';
       if (pack && userId) creditPack(userId, pack, paymentId, link?.id || '');
     }
+    // Checkout (Orders) success → credits by order id
+else if (event?.event === 'payment.captured') {
+  const pay = event?.payload?.payment?.entity;
+  const orderId = pay?.order_id;
+  if (orderId) {
+    try {
+      const or = await axios.get(
+        `https://api.razorpay.com/v1/orders/${orderId}`,
+        { auth: { username: RAZORPAY_KEY_ID, password: RAZORPAY_KEY_SECRET } }
+      );
+      const ref = or?.data?.notes?.ref || or?.data?.receipt || '';
+      const { pack, userId } = parseRef(ref);
+      if (pack && userId) creditPack(userId, pack, pay?.id || '', orderId);
+    } catch (e) {
+      console.error('webhook fetch order failed', e?.response?.data || e.message);
+    }
+  }
+}
     return res.json({ ok: true });
   } catch (e) {
     console.error('webhook error', e);
@@ -1123,7 +1142,7 @@ app.post('/buy/:pack', async (req, res) => {
       accept_partial: false,
       description: `Shraddha ${pack} pack for ${userEmail || userId}`,
       customer: userEmail ? { email: userEmail } : undefined,
-      notify: { sms: false, email: !!userEmail },
+      notify: { sms: false, email: RZP_NOTIFY_EMAIL && !!userEmail },
       reference_id: makeRef(userId, pack),
       callback_url: returnUrl,
       callback_method: 'get',
@@ -1144,7 +1163,82 @@ app.post('/buy/:pack', async (req, res) => {
     return res.status(500).json({ ok:false, error:'create_failed', details });
   }
 });
+// ======== DIRECT CHECKOUT (Orders API) ========
+app.post('/order/:pack', async (req, res) => {
+  const pack = String(req.params.pack || '').toLowerCase();
+  const def  = PACKS[pack];
+  if (!def) return res.status(400).json({ ok:false, error:'bad_pack' });
 
+  if (!RAZORPAY_KEY_ID || !RAZORPAY_KEY_SECRET) {
+    return res.status(500).json({ ok:false, error:'keys_missing' });
+  }
+
+  const userId = getUserIdFrom(req);
+  try {
+    const ref     = makeRef(userId, pack);      // e.g. "daily|{sub or email}"
+    const receipt = `${ref}|${Date.now()}`;
+
+    const payload = {
+      amount: def.amount * 100,
+      currency: 'INR',
+      receipt,
+      notes: { ref, pack, userId },
+      payment_capture: 1
+    };
+
+    const r = await axios.post(
+      'https://api.razorpay.com/v1/orders',
+      payload,
+      { auth: { username: RAZORPAY_KEY_ID, password: RAZORPAY_KEY_SECRET } }
+    );
+
+    return res.json({
+      ok: true,
+      order_id: r.data.id,
+      amount: r.data.amount,
+      currency: r.data.currency,
+      key_id: RAZORPAY_KEY_ID
+    });
+  } catch (e) {
+    const details = e?.response?.data || { message: e.message };
+    console.error('order create failed:', details);
+    return res.status(500).json({ ok:false, error:'order_failed', details });
+  }
+});
+app.post('/verify-order', async (req, res) => {
+  try {
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body || {};
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+      return res.status(400).json({ ok:false, error:'missing_params' });
+    }
+
+    // Signature check
+    const expected = crypto
+      .createHmac('sha256', RAZORPAY_KEY_SECRET)
+      .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+      .digest('hex');
+
+    if (expected !== razorpay_signature) {
+      return res.status(400).json({ ok:false, error:'bad_signature' });
+    }
+
+    // Recover our ref and credit
+    const or = await axios.get(
+      `https://api.razorpay.com/v1/orders/${razorpay_order_id}`,
+      { auth: { username: RAZORPAY_KEY_ID, password: RAZORPAY_KEY_SECRET } }
+    );
+    const ref = or?.data?.notes?.ref || or?.data?.receipt || '';
+    const { pack, userId } = parseRef(ref);
+    if (!pack || !userId) return res.status(400).json({ ok:false, error:'bad_ref' });
+
+    const { wallet, lastCredit } = creditPack(userId, pack, razorpay_payment_id, razorpay_order_id);
+    return res.json({ ok:true, wallet, lastCredit });
+  } catch (e) {
+    console.error('verify-order failed', e?.response?.data || e.message);
+    return res.status(500).json({ ok:false, error:'verify_failed' });
+  }
+});
+// ======== END DIRECT CHECKOUT ========
 // Verify the Payment Link callback and credit coins
 app.post('/verify-payment-link', async (req, res) => {
   try {
@@ -1182,4 +1276,5 @@ app.get('/wallet', (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
