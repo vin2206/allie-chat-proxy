@@ -51,7 +51,8 @@ const walletDB = readJSON(walletFile);
 function getUserIdFrom(req) {
   const email = String(req.body?.userEmail || req.query?.email || req.get('x-user-email') || '').toLowerCase();
   const sub   = String(req.body?.userSub   || req.query?.sub   || '').trim();
-  return sub || email; // prefer Google sub if present
+  const id = sub || email; // prefer Google sub if present
+  return id || 'anon';     // fallback so reference_id never ends up as `${pack}|`
 }
 
 function getWallet(userId){
@@ -488,9 +489,10 @@ app.post('/webhook/razorpay', express.raw({ type: 'application/json' }), async (
     if (event?.event === 'payment_link.paid') {
       const link = event?.payload?.payment_link?.entity;
       const ref  = link?.reference_id || '';
-      const { pack, userId } = parseRef(ref);
-      const paymentId = event?.payload?.payment?.entity?.id || '';
-      if (pack && userId) creditPack(userId, pack, paymentId, link?.id || '');
+const { pack, userId } = parseRef(ref);
+const safeUserId = userId || 'anon';
+const paymentId = event?.payload?.payment?.entity?.id || '';
+if (pack && safeUserId) creditPack(safeUserId, pack, paymentId, link?.id || '');
     }
     // Checkout (Orders) success → credits by order id
 else if (event?.event === 'payment.captured') {
@@ -503,8 +505,9 @@ else if (event?.event === 'payment.captured') {
         { auth: { username: RAZORPAY_KEY_ID, password: RAZORPAY_KEY_SECRET } }
       );
       const ref = or?.data?.notes?.ref || or?.data?.receipt || '';
-      const { pack, userId } = parseRef(ref);
-      if (pack && userId) creditPack(userId, pack, pay?.id || '', orderId);
+const { pack, userId } = parseRef(ref);
+const safeUserId = userId || 'anon';
+if (pack && safeUserId) creditPack(safeUserId, pack, pay?.id || '', orderId);
     } catch (e) {
       console.error('webhook fetch order failed', e?.response?.data || e.message);
     }
@@ -527,6 +530,12 @@ const errorTimestamps = []; // Track repeated input format issues
 
 app.post('/report-error', async (req, res) => {
   try {
+    // 🔒 Guard: don’t attempt Resend if env is missing
+    if (!resendAPIKey || !fromEmail || !toEmail) {
+      console.error("Resend config missing (RESEND_API_KEY / FROM_EMAIL / SEND_TO_EMAIL)");
+      return res.status(500).json({ success: false, message: 'Resend config missing' });
+    }
+
     console.log("Incoming /report-error body:", req.body);
     const { error } = req.body;
     const message = `An error occurred in Allie Chat Proxy:\n${JSON.stringify(error, null, 2)}`;
@@ -534,24 +543,24 @@ app.post('/report-error', async (req, res) => {
     console.log("Sending email with Resend...");
 
     let response;
-try {
-  response = await fetch('https://api.resend.com/emails', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${resendAPIKey}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      from: fromEmail,
-      to: toEmail,
-      subject: 'Shraddha Chat Proxy Error Alert',
-      html: `<p>${message.replace(/\n/g, '<br>')}</p>`
-    })
-  });
-} catch (fetchErr) {
-  console.error("Fetch failed:", fetchErr.message);
-  return res.status(500).json({ success: false, message: "Fetch failed: " + fetchErr.message });
-}
+    try {
+      response = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${resendAPIKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          from: fromEmail,
+          to: toEmail,
+          subject: 'Shraddha Chat Proxy Error Alert',
+          html: `<p>${message.replace(/\n/g, '<br>')}</p>`
+        })
+      });
+    } catch (fetchErr) {
+      console.error("Fetch failed:", fetchErr.message);
+      return res.status(500).json({ success: false, message: "Fetch failed: " + fetchErr.message });
+    }
 
     const responseBody = await response.json();
     console.log("Resend response body:", responseBody);
@@ -1158,10 +1167,28 @@ app.post('/buy/:pack', async (req, res) => {
 
     return res.json({ ok:true, link_id: r.data.id, short_url: r.data.short_url });
   } catch (e) {
-    const details = e?.response?.data || { message: e.message };
-    console.error('buy link create failed:', details);
-    return res.status(500).json({ ok:false, error:'create_failed', details });
+  const details = e?.response?.data || { message: e.message };
+  const msg = (details?.error?.description || details?.message || '').toLowerCase();
+  const ref = makeRef(getUserIdFrom(req), pack);
+
+  if (msg.includes('reference_id already exists')) {
+    try {
+      const list = await axios.get(
+        `https://api.razorpay.com/v1/payment_links?reference_id=${encodeURIComponent(ref)}`,
+        { auth: { username: RAZORPAY_KEY_ID, password: RAZORPAY_KEY_SECRET } }
+      );
+      const existing = list?.data?.items?.[0];
+      if (existing) {
+        return res.json({ ok:true, link_id: existing.id, short_url: existing.short_url });
+      }
+    } catch (e2) {
+      console.error('failed to fetch existing payment_link:', e2?.response?.data || e2.message);
+    }
   }
+
+  console.error('buy link create failed:', details);
+  return res.status(500).json({ ok:false, error:'create_failed', details });
+}
 });
 // ======== DIRECT CHECKOUT (Orders API) ========
 app.post('/order/:pack', async (req, res) => {
@@ -1175,9 +1202,8 @@ app.post('/order/:pack', async (req, res) => {
 
   const userId = getUserIdFrom(req);
   try {
-    const ref     = makeRef(userId, pack);      // e.g. "daily|{sub or email}"
-    const receipt = `${ref}|${Date.now()}`;
-
+    const ref     = makeRef(userId, pack);                 // e.g. "daily|{sub or email}"
+    const receipt = `o_${Date.now().toString(36)}`;        // <= 40 chars, safe
     const payload = {
       amount: def.amount * 100,
       currency: 'INR',
@@ -1228,10 +1254,11 @@ app.post('/verify-order', async (req, res) => {
       { auth: { username: RAZORPAY_KEY_ID, password: RAZORPAY_KEY_SECRET } }
     );
     const ref = or?.data?.notes?.ref || or?.data?.receipt || '';
-    const { pack, userId } = parseRef(ref);
-    if (!pack || !userId) return res.status(400).json({ ok:false, error:'bad_ref' });
+const { pack, userId } = parseRef(ref);
+const safeUserId = userId || 'anon';
+if (!pack) return res.status(400).json({ ok:false, error:'bad_ref' });
 
-    const { wallet, lastCredit } = creditPack(userId, pack, razorpay_payment_id, razorpay_order_id);
+const { wallet, lastCredit } = creditPack(safeUserId, pack, razorpay_payment_id, razorpay_order_id);
     return res.json({ ok:true, wallet, lastCredit });
   } catch (e) {
     console.error('verify-order failed', e?.response?.data || e.message);
@@ -1256,10 +1283,11 @@ app.post('/verify-payment-link', async (req, res) => {
       return res.status(400).json({ ok:false, error:'not_paid' });
     }
 
-    const { pack, userId } = parseRef(reference_id);
-    if (!pack || !userId) return res.status(400).json({ ok:false, error:'bad_ref' });
+   const { pack, userId } = parseRef(reference_id);
+const safeUserId = userId || 'anon';
+if (!pack) return res.status(400).json({ ok:false, error:'bad_ref' });
 
-    const { wallet, lastCredit } = creditPack(userId, pack, payment_id, link_id);
+const { wallet, lastCredit } = creditPack(safeUserId, pack, payment_id, link_id);
     return res.json({ ok:true, wallet, lastCredit });
   } catch (e) {
     console.error('verify-payment-link failed', e?.response?.data || e.message);
@@ -1276,5 +1304,3 @@ app.get('/wallet', (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-
-
