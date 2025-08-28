@@ -10,9 +10,9 @@ const multer = require('multer');
 const FormData = require('form-data');
 const crypto = require('crypto'); // add
 // Razorpay + URLs  (keep names consistent everywhere)
-const RAZORPAY_KEY_ID          = process.env.RAZORPAY_KEY_ID;
-const RAZORPAY_KEY_SECRET      = process.env.RAZORPAY_KEY_SECRET;
-const RAZORPAY_WEBHOOK_SECRET  = process.env.RAZORPAY_WEBHOOK_SECRET;
+const RAZORPAY_KEY_ID          = (process.env.RAZORPAY_KEY_ID || '').trim();
+const RAZORPAY_KEY_SECRET      = (process.env.RAZORPAY_KEY_SECRET || '').trim();
+const RAZORPAY_WEBHOOK_SECRET  = (process.env.RAZORPAY_WEBHOOK_SECRET || '').trim();
 const FRONTEND_URL             = process.env.FRONTEND_URL || 'https://chat.buddyby.com';
 
 // Packs (authoritative on server)
@@ -1089,11 +1089,28 @@ app.get('/test-key', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+// ---- Razorpay health ping ----
+app.get('/razorpay/health', async (req, res) => {
+  try {
+    const r = await axios.get(
+      'https://api.razorpay.com/v1/payment_links?count=1',
+      { auth: { username: RAZORPAY_KEY_ID, password: RAZORPAY_KEY_SECRET } }
+    );
+    res.json({ ok:true, mode: RAZORPAY_KEY_ID.startsWith('rzp_test_') ? 'test' : 'live' });
+  } catch (e) {
+    res.status(500).json({ ok:false, details: e?.response?.data || { message: e.message } });
+  }
+});
 // Create a Payment Link for a pack (Daily/Weekly)
 app.post('/buy/:pack', async (req, res) => {
   const pack = String(req.params.pack || '').toLowerCase();
   const def = PACKS[pack];
   if (!def) return res.status(400).json({ ok:false, error:'bad_pack' });
+
+  // fail fast if keys are missing/empty
+  if (!RAZORPAY_KEY_ID || !RAZORPAY_KEY_SECRET) {
+    return res.status(500).json({ ok:false, error:'keys_missing', details:'RAZORPAY_KEY_ID/SECRET not set' });
+  }
 
   const userId    = getUserIdFrom(req);
   const userEmail = String(req.body?.userEmail || '').toLowerCase();
@@ -1109,7 +1126,9 @@ app.post('/buy/:pack', async (req, res) => {
       notify: { sms: false, email: !!userEmail },
       reference_id: makeRef(userId, pack),
       callback_url: returnUrl,
-      callback_method: 'get'
+      callback_method: 'get',
+      reminder_enable: false,
+      notes: { pack, userId }
     };
 
     const r = await axios.post(
@@ -1120,8 +1139,9 @@ app.post('/buy/:pack', async (req, res) => {
 
     return res.json({ ok:true, link_id: r.data.id, short_url: r.data.short_url });
   } catch (e) {
-    console.error('buy link create failed', e?.response?.data || e.message);
-    return res.status(500).json({ ok:false, error:'create_failed' });
+    const details = e?.response?.data || { message: e.message };
+    console.error('buy link create failed:', details);
+    return res.status(500).json({ ok:false, error:'create_failed', details });
   }
 });
 
@@ -1162,3 +1182,4 @@ app.get('/wallet', (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
