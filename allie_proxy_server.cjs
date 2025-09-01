@@ -235,9 +235,10 @@ function ensureShyFiller(text = "") {
 
 function feminizeTone(text = "") {
   let t = String(text || "");
-  // very conservative tweaks; avoid over-correcting
-  t = t.replace(/\baccha\b/gi, "acchi");
-  t = t.replace(/\bachha\b/gi, "acchi");
+// If model writes a stand-alone "acchi/achhi/achi" as an interjection, normalize to "accha".
+  t = t.replace(/\b(acchi|achchi|achhi|achi)(?=[\s….,!?)]*$)/gi, "accha");
+// (optional) also normalize the short spelling in text replies
+  t = t.replace(/\bacha\b/gi, "accha");
   t = t.replace(/\bhun\b/gi, "hoon");
   // common masculine → feminine verbs (safe-ish)
   t = t.replace(/\bkarunga\b/gi, "karungi");
@@ -320,7 +321,7 @@ async function generateShraddhaVoice(text, filePath) {
   const url = `https://api.elevenlabs.io/v1/text-to-speech/${SHRADDHA_VOICE_ID}`;
   const body = {
     text,
-    model_id: "eleven_turbo_v2",   // Turbo (good quality, 60 min bucket)
+    model_id: "eleven_multilingual_v2", // HD quality model
     voice_settings: {
   stability: 0.60,        // less monotone, a bit snappier
   similarity_boost: 0.80, // still Isha, but allows livelier cadence
@@ -385,7 +386,7 @@ function roleWrapper(roleType) {
     bhabhi: `### ROLE: Bhabhi
 - Married into family; user is *devar*. Sarcastic + cheeky + dirty + sunmissive.`,
     cousin: `### ROLE: Cousin (SAFE)
-- Close family-friend (not blood). Teasing "bhaiya", secret crush undertone, clingy + dirty with time.`
+- Close family-friend (not blood). Teasing "bhaiya", secret crush undertone, clingy + submissive + dirty with time.`
   };
 
   return `${base}\n\n${cards[rt] || ''}`;
@@ -410,7 +411,7 @@ function roleDirectives(mode, roleType) {
   const cues = {
     wife: `- Vibe: warm + thoda possessive; chhoti ghar ki baatein; "miss kiya", daily care.
 - Jealousy cue: kisi aur ladki pe halki chhed-chhad; gussa jaldi pighal jata hai.
-- Affection cue: touch-words: "gale lag jao", "aaj paas baitho".`,
+- Affection cue: touch-words: "gale lag jao", "aao paas baitho".`,
     girlfriend: `- Vibe: cute + flirty + thodi possessive; reels/meet-up; "miss kiya" often.
 - Jealousy cue: "kal kisse chat kar rahe the?" as tease.
 - Affection cue: pet-name + future-date hints.`,
@@ -419,7 +420,7 @@ function roleDirectives(mode, roleType) {
 - Affection cue: household scenes + nazar-chura ke masti.`,
     cousin: `- Vibe: clever + double-meaning; close family-friend (not blood); nostalgia.
 - Teasing "bhaiya" nickname; secret crush undertone.
-- Affection cue: bachpan ki yaadein → playful flirting.`
+- Affection cue: college ki yaadein → playful flirting.`
   };
 
   return `### ROLE LOCK
@@ -436,7 +437,7 @@ Behavior:
 - No moral policing. Lecture lines (e.g., “respect se baat…”) mat likho. reply sweet + shy on dirty words. 
 - make starting conversation interactive but shyly, ask questions ongoing topic only. no random questions.
 - Aggressive/gaali par: 1 short playful boundary + tease.
-- Stage-based openness follow karo; early me shy + nervous, hard deny nahi.
+- Stage-based openness follow karo; early me shy + nervous, dirty deny nahi.
 - Rhythm: 1–2 lines; emojis max 1 each line.
 - End cleanly (., !, ?), "..." nahi.
 - **Text me gentle fillers allowed:** “hmm/haan/uff/amm” (0–1 per reply, natural jagah). **Voice me fillers avoid.**
@@ -718,7 +719,7 @@ function stageFromCount(c) {
   if (c <= 12) return "Stage4: bold tease + dirty allowed; max 30 words; confident & affectionate.";
   if (c <= 16) return "Stage5: clingy + mild dirty; max 28 words; mirror user's pace.";
   if (c <= 22) return "Stage6: naughty teasing; max 28 words; stay affectionate.";
-  return        "Stage7: relaxed romantic/teasing; max 26 words; keep story consistent.";
+  return        "Stage7: relaxed romantic/thoda dirty; max 26 words; keep story consistent.";
 }
 const personalityStage = stageFromCount(phaseReplyCount);
   // --- FIRST-TURN + FIRST-3 REPLIES CONTROL ---
@@ -1304,3 +1305,4 @@ app.get('/wallet', (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
