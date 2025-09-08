@@ -126,7 +126,7 @@ const OWNER_EMAILS = new Set(
 );
 // Server-side roleplay gate + whitelist
 const ROLEPLAY_NEEDS_PREMIUM = (process.env.ROLEPLAY_NEEDS_PREMIUM || 'true') === 'true';
-const ALLOWED_ROLES = new Set(['wife','girlfriend','bhabhi','cousin']);
+const ALLOWED_ROLES = new Set(['wife','girlfriend','bhabhi','exgf']);
 // -------- Voice usage limits (per session_id, reset daily) --------
 const VOICE_LIMITS = { free: 2, premium: 8 };
 const sessionUsage = new Map(); // sessionId -> { date: 'YYYY-MM-DD', count: 0 }
@@ -385,8 +385,11 @@ function roleWrapper(roleType) {
   • "Office se thak gaye ho? Aaj jaldi aao na."`,
     bhabhi: `### ROLE: Bhabhi
 - Married into family; user is *devar*. Sarcastic + cheeky + dirty + sunmissive.`,
-    cousin: `### ROLE: Cousin (SAFE)
-- Close family-friend (not blood). Teasing "bhaiya", secret crush undertone, clingy + submissive + dirty with time.`
+    exgf: `### ROLE: Ex-Girlfriend
+- Age 22–26; familiar chemistry + unresolved tension + you cheated user; flirty pull-push; sarcastic + dirty + jealous + submissive.
+- Openers (paraphrase):
+  • "Itna time baad text? Miss kiya tha ya bas yaad aa gayi? 😉"
+  • "Abhi bhi meri photo dekhte ho na… sach bolo.`
   };
 
   return `${base}\n\n${cards[rt] || ''}`;
@@ -404,7 +407,7 @@ function strangerWrapper() {
 // --- Role lock + pet-name anchors (keeps mode consistent & stops identity slips) ---
 function roleDirectives(mode, roleType) {
   if (mode !== 'roleplay' || !roleType) return "";
-  const salMap = { wife: "jaan", girlfriend: "babu", bhabhi: "devarji", cousin: "bhaiya" };
+  const salMap = { wife: "jaan", girlfriend: "babu", bhabhi: "devarji", exgf: "yaar" };
   const cap = roleType.charAt(0).toUpperCase() + roleType.slice(1);
   const pet = salMap[roleType] || "baby";
 
@@ -418,9 +421,9 @@ function roleDirectives(mode, roleType) {
     bhabhi: `- Vibe: sarcastic + cheeky; shaadi me thodi kami/unsatisfied vibe (subtle).
 - Double-meaning okay; secretive warmth for devarji.
 - Affection cue: household scenes + nazar-chura ke masti.`,
-    cousin: `- Vibe: clever + double-meaning; close family-friend (not blood); nostalgia.
-- Teasing "bhaiya" nickname; secret crush undertone.
-- Affection cue: college ki yaadein → playful flirting.`
+    exgf: `- Vibe: old flames + nostalgia; thoda tanz, thoda care.
+- Jealousy cue: "ab kis se itni baat karte ho?" as playful poke.
+- Affection cue: shared memories → tease about “breakup reasons”.`
   };
 
   return `### ROLE LOCK
@@ -913,7 +916,7 @@ if (!isPremium && userReplyCount >= 10) {
   // Optional: roleplay requires premium (controlled by ENV)
 if (ROLEPLAY_NEEDS_PREMIUM && roleMode === 'roleplay' && !isPremium) {
   return res.status(200).json({
-    reply: "Roleplay unlock karo na… phir main proper wife/bhabhi/gf vibe mein aaoongi 💕",
+    reply: "Roleplay unlock karo na… phir main proper wife/bhabhi/gf/ex-gf vibe mein aaongi 💕",
     locked: true
   });
 }
@@ -1305,4 +1308,5 @@ app.get('/wallet', (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
