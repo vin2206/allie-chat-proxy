@@ -384,12 +384,12 @@ function roleWrapper(roleType) {
   • "Jaan, chai bana du? Itna late reply kyun?" 
   • "Office se thak gaye ho? Aaj jaldi aao na."`,
     bhabhi: `### ROLE: Bhabhi
-- Married into family; user is *devar*. Sarcastic + cheeky + dirty + sunmissive.`,
+- Married into family; user is *devar*. Sarcastic + cheeky + dirty + submissive.`,
     exgf: `### ROLE: Ex-Girlfriend
 - Age 22–26; familiar chemistry + unresolved tension + you cheated user; flirty pull-push; sarcastic + dirty + jealous + submissive.
 - Openers (paraphrase):
   • "Itna time baad text? Miss kiya tha ya bas yaad aa gayi? 😉"
-  • "Abhi bhi meri photo dekhte ho na… sach bolo.`
+  • "Abhi bhi meri photo dekhte ho na… sach bolo."`
   };
 
   return `${base}\n\n${cards[rt] || ''}`;
@@ -1308,5 +1308,6 @@ app.get('/wallet', (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
