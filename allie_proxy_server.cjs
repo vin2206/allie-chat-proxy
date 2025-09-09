@@ -212,7 +212,7 @@ function ensureShyFiller(text = "", opts = {}) {
   if (opts?.isVoice) return t;
 
   // Already starts with a filler?
-  if (/^\s*(?:hmm+|umm+|um+|haan+|arre|uff+)\b[,…-–—]?\s*/i.test(t)) return t;
+  if (/^\s*(?:hmm+|umm+|um+|haan+|arre|uff+)\b[\u002C\u2026\u2013\u2014-]?\s*/i.test(t)) return t;
 
   // Avoid back-to-back fillers
   if (/(^|\s)(hmm+|umm+|um+|haan+|arre|uff+)\b/i.test(prev)) return t;
@@ -249,11 +249,11 @@ function tidyFillers(text = "") {
   if (!t) return t;
 
   // Collapse multiple leading fillers to one
-  t = t.replace(/^(\s*(?:hmm+|umm+|um+|haan+|arre|uff+)\b[,…-–—]?\s*){2,}/i, (m) => m.replace(/^(.*?)(?:.+)$/i, "$1"));
+  t = t.replace(/^(?:\s*(?:hmm+|umm+|um+|haan+|arre|uff+)\b[\u002C\u2026\u2013\u2014-]?\s*){2,}/i, (m) => m.replace(/^(.*?)(?:.+)$/i, "$1"));
 
   // If starts with 'uff' but tone is surprise/question → swap to "Hein?"
   if (/^\s*uff+\b/i.test(t) && /[?？！]/.test(t)) {
-    t = t.replace(/^\s*uff+\b[,…-–—]?\s*/i, "Hein? ");
+    t = t.replace(/^\s*uff+\b[\u002C\u2026\u2013\u2014-]?\s*/i, "Hein? ");
   }
 
   // Limit to one filler at very start
@@ -1369,6 +1369,7 @@ app.get('/wallet', (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
