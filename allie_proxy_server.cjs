@@ -1,5 +1,4 @@
 const express = require('express');
-const fetch = require('node-fetch');
 const axios = require('axios');
 // REMOVE body-parser completely (not needed)
 const cors = require('cors');
@@ -1370,6 +1369,7 @@ app.get('/wallet', (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
