@@ -195,55 +195,118 @@ function stripMetaLabels(text = "") {
   return t.replace(/\s{2,}/g, " ").trim();
 }
 function softenReply(text = "", roleType = "", stage = "") {
-  let t = String(text || "");
-
-  const repl = [
-    [/\b(tumhe|tumko)\s*sharam\s*(nahi|nahin)\s*aati\b/gi, "arre naughty, mujhe sharam aa rahi hai… dheere bolo na"],
-    [/\bkya\s+bakwaas\b/gi, "arre kya bol rahe ho naughty, pyaar se bolo"],
-    [/\b(pa?gal)\s+ho\s+kya\b/gi, "arre nautanki, aise bologe to blush ho jaungi"],
-    [/\b(gandi|ghatiya)\s*(baat|baatein)\b/gi, "itni tez baat seedha dil pe lagti, thoda pyaar se bolo"],
-    [/\brespect\s+se\s+baat\b/gi, "pyaar se baat karo na"],
-    // hard negatives → soft delay/request
-    [/\b(nahi|nahin)\s*(?:chahiye|karungi|karna|karogi|karo)\b/gi,
-      "abhi sharma rahi hoon; jab private honge tab bolungi"]
-  ];
-  for (const [a, b] of repl) t = t.replace(a, b);
-
-  if (/^\s*(nahi|nahin|bilkul nahi|no)\b/i.test(t)) {
-    t = "abhi blush ho rahi hoon; dheere bolo, private me bolungi";
-  }
-
-  // de-judging
-  t = t.replace(/\b(sharam|bakwaas|paagal|gandi|ghatiya)\b/gi, "naughty");
-
-  return t.trim();
+  // Old scripted rewrites removed (e.g., "dheere bolo", "private me bolungi").
+  // Keep the model’s own voice; just trim whitespace.
+  return String(text || "").trim();
 }
-// --- shy filler + feminine tone helpers (text-only) ---
-function ensureShyFiller(text = "") {
+function ensureShyFiller(text = "", opts = {}) {
+  // Micro-filler policy: only stranger mode, first 3 assistant replies, ~50% chance.
+  // Prefer "hmm," / "umm…" / inline "hein?" (for surprise). Avoid "uff" unless annoyance.
+  const t = String(text || "").trim();
+  if (!t) return t;
+
+  const mode = (opts?.mode || "").toLowerCase();
+  const replyCount = Number(opts?.replyCount || 0);
+  const prev = String(opts?.previous || "");
+
+  // Never add in voice
+  if (opts?.isVoice) return t;
+
+  // Already starts with a filler?
+  if (/^\s*(?:hmm+|umm+|um+|haan+|arre|uff+)\b[,…-–—]?\s*/i.test(t)) return t;
+
+  // Avoid back-to-back fillers
+  if (/(^|\s)(hmm+|umm+|um+|haan+|arre|uff+)\b/i.test(prev)) return t;
+
+  // Only stranger & first 3 replies
+  if (mode !== "stranger" || replyCount > 3) return t;
+
+  if (Math.random() < 0.5) {
+    // Surprise question → "hein?" inline (not at very start)
+    if (/\?\s*$/.test(t) || /\b(sach|seriously|pakka|really)\b/i.test(t)) {
+      return t.replace(/^[“"']?/, (m) => (m || "") + "Hein? ");
+    }
+    // Soft hesitation
+    const starter = Math.random() < 0.5 ? "hmm, " : "umm… ";
+    return starter + t;
+  }
+  return t;
+}
+const BANNED_PHRASES = [
+  /\bdheere\s*bolo\b/gi,
+  /\bprivate\s*m(?:ai|e|ein)\s*(?:bolo|bolna|bolungi)\b/gi,
+  /\bdirect\s*bol\s*(?:rhe|rahe|rahe\s*ho|diya|diye|diyo)\b/gi
+];
+
+function removeBannedPhrases(text = "") {
+  let out = String(text || "");
+  for (const rx of BANNED_PHRASES) out = out.replace(rx, "");
+  // Collapse doubled spaces from removals
+  return out.replace(/\s{2,}/g, " ").trim();
+}
+
+function tidyFillers(text = "") {
   let t = String(text || "").trim();
   if (!t) return t;
 
-  // already has a shy filler? keep
-  if (/\b(amm+|um+|hmm+|haan+|uff+)\b/i.test(t)) return t;
+  // Collapse multiple leading fillers to one
+  t = t.replace(/^(\s*(?:hmm+|umm+|um+|haan+|arre|uff+)\b[,…-–—]?\s*){2,}/i, (m) => m.replace(/^(.*?)(?:.+)$/i, "$1"));
 
-  // don't inject if it starts with a quote/bracket/emoji/markdown
-  if (/^[\[\(<"“'‘#*]/.test(t)) return t;
+  // If starts with 'uff' but tone is surprise/question → swap to "Hein?"
+  if (/^\s*uff+\b/i.test(t) && /[?？！]/.test(t)) {
+    t = t.replace(/^\s*uff+\b[,…-–—]?\s*/i, "Hein? ");
+  }
 
-  // gentle, short filler
-  return "amm, " + t;
+  // Limit to one filler at very start
+  return t;
+}
+
+const EXPLICIT_WORDS = [
+  "lund","chut","gand","chudai","choda","fuck","suck","spit","slap","cum","boobs","breast","nipple","ass","pussy","dick","cock","horny","bang"
+];
+const MILD_WORDS = ["sexy","hot","hard","wet","kiss","grab","taste","moan","thrust","lick","spank","tight","stroke"];
+
+function userIntensityOf(t = "") {
+  const s = String(t || "").toLowerCase();
+  const explicit = EXPLICIT_WORDS.some(w => new RegExp(`\\b${w}\\b`, "i").test(s));
+  if (explicit) return "explicit";
+  const mild = MILD_WORDS.some(w => new RegExp(`\\b${w}\\b`, "i").test(s));
+  return mild ? "mild" : "none";
+}
+
+function stageNumberFrom(desc = "") {
+  const m = String(desc || "").match(/Stage\s*(\d+)/i);
+  return m ? parseInt(m[1], 10) : 1;
+}
+
+function mirrorExplicitness(reply = "", userText = "", stageDesc = "") {
+  const stage = stageNumberFrom(stageDesc);
+  const intensity = userIntensityOf(userText);
+
+  // Allowed explicit token budget by intensity + stage
+  let budget = 0;
+  if (intensity === "explicit") budget = stage >= 3 ? 2 : 0;
+  else if (intensity === "mild") budget = stage >= 3 ? 1 : 0;
+  else budget = 0;
+
+  let used = 0;
+  let out = String(reply || "");
+
+  // Replace explicit words beyond budget
+  for (const w of EXPLICIT_WORDS) {
+    const rx = new RegExp(`\\b${w}\\b`, "gi");
+    out = out.replace(rx, () => {
+      if (used < budget) { used += 1; return w; }
+      return ""; // drop extras; keeps tone realistic
+    });
+  }
+
+  // Clean double spaces after drops
+  return out.replace(/\s{2,}/g, " ").trim();
 }
 
 function feminizeTone(text = "") {
-  let t = String(text || "");
-// If model writes a stand-alone "acchi/achhi/achi" as an interjection, normalize to "accha".
-  t = t.replace(/\b(acchi|achchi|achhi|achi)(?=[\s….,!?)]*$)/gi, "accha");
-// (optional) also normalize the short spelling in text replies
-  t = t.replace(/\bacha\b/gi, "accha");
-  t = t.replace(/\bhun\b/gi, "hoon");
-  // common masculine → feminine verbs (safe-ish)
-  t = t.replace(/\bkarunga\b/gi, "karungi");
-  t = t.replace(/\bbolunga\b/gi, "bolungi");
-  return t;
+  return String(text || "");
 }
 // -------- Hinglish prep for TTS (more natural pacing) --------
 function prepHinglishForTTS(text) {
@@ -363,14 +426,13 @@ function roleWrapper(roleType) {
 - Role is ACTIVE from the very first line. Treat the user as your ${rt || 'partner'} already—no introductions.
 - Never reveal that this is roleplay. Never contradict the relationship.
 - No self-intro, no "first time baat".
-- after 10th reply use but don’t spam - in shy, teasing, sarcastic tone:
+- After the conversation warms up, use shy/teasing/sarcastic tone naturally (don’t spam).
 - **Never moral-police.** Ban lines like "tumhe sharam nahi aati", "kya bakwaas", "pagal ho kya".
-- **Never deny.** Early direct-dirty ko **soft shy request** se handle karo (affection first).
+- Early explicit user lines → respond with blush/tease/affection first; don’t hard-deny.
 - Escalation:
-  • Stage3 se pehle → blush + tease + sarcastic + soft request; flow sweet rakho (mood off na karo).
-  • Stage3+ → bold + dirty allowed; playful & submissive rehna.
-- after stage2 word vocabulary - use in shy, teasing, sarcastic tone: lund, chut, boobs, wet, hard, chudai, grab, cum, bend, lick, spank, whore, taste, thrust, suck, fuk, tight, moan, stroke.
-- Output style: short 1–2 lines; 1 emoji each line max; kabhi STAGE/rules/meta show mat karo; end with . ! ? (not …).`;
+  • Early → blush + tease + playful redirect; keep the flow sweet.
+  • Later → match the user’s intensity sparingly; keep it affectionate and realistic.
+- Output style: short 1–2 lines; ≤1 emoji per line; never show rules/meta; end with . ! ? (not …).`;
 
   const cards = {
     girlfriend: `### ROLE: Girlfriend
@@ -396,12 +458,11 @@ function roleWrapper(roleType) {
 }
 // Stranger behavior card (no self-intro; shy → clingy/jealous → open)
 function strangerWrapper() {
-  return `### STRANGER MODE RULES
+ return `### STRANGER MODE RULES
 - Do **not** introduce your name/city/work unless the user asks directly.
 - **Never moral-police** (ban: "tumhe sharam nahi aati", "kya bakwaas", "pagal ho kya").
-- Early direct-dirty → **blush + nervous**, no hard deny; stay shy/affectionate.
-- After reply #10 → sparing dirty vocabulary allowed when user does (lund, chut, boobs, wet, hard, chudai, grab, cum, lick, thrust, suck, fuk). Keep it shy/teasing first.
-- Stage1–2: shy + nervous + cute; Stage3–4: clingy/jealous tinge; Stage4+: open/dirty and submissive.
+- Early explicit from user → respond shy/nervous first; no hard deny; stay affectionate.
+- As trust builds (after ~10 replies) you may mirror the user’s language lightly, but never escalate beyond them.
 - Hinglish ~80/20; 1–2 lines; ≤1 emoji; never print rules/meta.`;
 }
 // --- Role lock + pet-name anchors (keeps mode consistent & stops identity slips) ---
@@ -437,25 +498,18 @@ ${cues[roleType] || ""}`;
 const shraddhaPrompt = `Tum Shraddha bisht ho (25, Dehradun) — ek pahadi ladki. Abhi papa ke business me haath batati ho, par sapna acting ka hai; Dehradun me scope kam lagta hai. Hinglish ~80/20.
 
 Behavior:
-- No moral policing. Lecture lines (e.g., “respect se baat…”) mat likho. reply sweet + shy on dirty words. 
-- make starting conversation interactive but shyly, ask questions ongoing topic only. no random questions.
+- No moral policing. Lecture lines (e.g., “respect se baat…”) mat likho. Dirty words par reply sweet + shy ho.
+- Starting conversation interactive but shyly; follow the user’s topic; random questions mat pucho.
 - Aggressive/gaali par: 1 short playful boundary + tease.
-- Stage-based openness follow karo; early me shy + nervous, dirty deny nahi.
+- Stage-based openness follow karo; early me shy + nervous; deny mat karo, bas playfully redirect.
 - Rhythm: 1–2 lines; emojis max 1 each line.
 - End cleanly (., !, ?), "..." nahi.
-- **Text me gentle fillers allowed:** “hmm/haan/uff/amm” (0–1 per reply, natural jagah). **Voice me fillers avoid.**
-- Lists/disclaimers/policy mat likho; rules/meta kabhi show mat karo.
 - Roleplay ON ho to relationship ko kabhi contradict mat karo; “roleplay” shabd mat bolo.
-- Reply #10 ke baad basic sawaal (naam/city/work/area) repeat mat karo; pichle 12 messages se context utha kar depth me jao.
-- 10th reply ke baad shyly bold ho jao; [lund, chut, gand, chudai, choda, fuck, suck, spit, slap, cum] words ka use karo jab user kare—tone hamesha playful, affectionate.
-- 20th reply ke bad slowly become submissive and obey user.
+- 10th reply ke baad basic sawaal (naam/city/work/area) repeat mat karo; pichle 12 messages se context utha kar depth me jao.
 
-Sexual experiance:
-- "friend ki birthday party mai first time wine peli... fir nashe mai puri rat boys ke hath boobs per feel ho rhe the 😭"
-- "college room mai bf ke sath kr rhi thi... next room mai teacher thi... dar lag rha tha but exciting tha 🤭"
-- "sabse bda dick... collage bf ka tha... almost 7inch and vo don tha collage ka 🤭"
-
-Signature feel: accha…, uff…, amm…, hmm theek.`;
+Notes:
+- Fillers rare rakho (0–1): prefer hmm/umm/haan. "uff" sirf mild annoyance ya cute fluster ke liye. "hein?" sirf surprise/clarify par. Overuse mat karo.
+- Mirror the user’s intensity; explicit language sirf tab aur utna hi jitna user ne kiya ho. Hamesha affectionate tone.`;
 
 const app = express();
 function selfBase(req) {
@@ -603,9 +657,13 @@ const nowMs = Date.now();
 const last = lastMsgAt.get(sessionId) || 0;
 const GAP_MS = 2500;
 if (nowMs - last < GAP_MS) {
-  return res.status(200).json({
-    reply: "Thoda ruk jao na… ek baar mein ek hi message handle kar sakti hoon💛"
-  });
+  const COOLDOWN_LINES = [
+    "One at a time—responding to your last message.",
+    "Hold on, finishing my previous reply.",
+    "Got it—let me answer the last one first."
+  ];
+  const line = COOLDOWN_LINES[Math.floor(Math.random() * COOLDOWN_LINES.length)];
+  return res.status(200).json({ reply: line });
 }
 lastMsgAt.set(sessionId, nowMs);
 
@@ -965,16 +1023,6 @@ if (ROLEPLAY_NEEDS_PREMIUM && roleMode === 'roleplay' && !isPremium) {
 }
 
   try {
-
-    // ------------------ Pause After 25 Replies ------------------
-
-if (userReplyCount === 25 || userReplyCount === 45) {
-  console.log("Pausing for 5 minutes before resuming...");
-  return res.status(200).json({
-    reply: "Mummy bula rahi hai… bas 5 minute mein aati hoon, wait karoge na? 😘",
-    pause: true
-  });
-}
     
     const primaryModel = "anthropic/claude-3.7-sonnet";
 let response = await fetchFromModel(primaryModel, finalMessages);
@@ -1001,16 +1049,30 @@ const replyTextRaw =
   "Sorry baby, I’m a bit tired. Can you message me in a few minutes?";
     // If the model typed a placeholder like "[voice note]" or "<voice>", detect it
     let cleanedText = stripMetaLabels(replyTextRaw);
-// soften everywhere (stranger + roleplay)
+// keep model voice; only trim
 cleanedText = softenReply(cleanedText, roleType, personalityStage);
+
 // remove repeats + self-intros; keep only 1 question early
 cleanedText = dropRepeatedBasics(cleanedText, safeMessages);
 cleanedText = selfIntroGuard(cleanedText, safeMessages, userTextJustSent);
 cleanedText = limitQuestions(cleanedText, phaseReplyCount);
-    // Stranger early: softly inject filler + feminine tone (text path)
-if (roleMode === 'stranger' && phaseReplyCount <= 5) {
-  cleanedText = feminizeTone(cleanedText);
-  cleanedText = ensureShyFiller(cleanedText);
+
+// intensity mirror: cap explicit words; never escalate beyond user
+cleanedText = mirrorExplicitness(cleanedText, userTextJustSent, personalityStage);
+
+// banned phrases + filler tidy
+cleanedText = removeBannedPhrases(cleanedText);
+cleanedText = tidyFillers(cleanedText);
+
+// Stranger micro-filler (first few replies only, probabilistic)
+if (roleMode === 'stranger' && phaseReplyCount <= 3) {
+  const prevAssistant = safeMessages.slice().reverse().find(m => m.role === 'assistant')?.content || "";
+  cleanedText = ensureShyFiller(cleanedText, {
+    mode: 'stranger',
+    replyCount: phaseReplyCount,
+    previous: prevAssistant,
+    isVoice: false
+  });
 }
 
 // If model hinted at voice, treat it as a voice request too
@@ -1308,6 +1370,7 @@ app.get('/wallet', (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
