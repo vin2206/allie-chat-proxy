@@ -508,8 +508,9 @@ Behavior:
 
 Notes:
 - Fillers rare rakho (0–1): prefer hmm/umm/haan. "uff" sirf mild annoyance ya cute fluster ke liye. "hein?" sirf surprise/clarify par. Overuse mat karo.
-- Mirror the user’s intensity; explicit language sirf tab aur utna hi jitna user ne kiya ho. Hamesha affectionate tone.`;
-
+- Mirror the user’s intensity; explicit language sirf tab aur utna hi jitna user ne kiya ho. Hamesha affectionate tone.
+- newer deny to dirty talk, continue with user story.`;
+  
 const app = express();
 function selfBase(req) {
   return process.env.SERVER_URL || `${req.protocol}://${req.get('host')}`;
@@ -1369,6 +1370,7 @@ app.get('/wallet', (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
