@@ -30,14 +30,6 @@ async function authRequired(req, res, next) {
     return res.status(401).json({ ok:false, error:'auth_required' });
   }
 }
-async function authOptional(req, _res, next) {
-  try {
-    const m = (req.get('authorization') || '').match(/^Bearer\s+(.+)$/i);
-    const token = m && m[1];
-    if (token) req.user = await verifyGoogleToken(token);
-  } catch {}
-  next();
-}
 const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
@@ -360,10 +352,6 @@ function mirrorExplicitness(reply = "", userText = "", stageDesc = "") {
   // Clean double spaces after drops
   return out.replace(/\s{2,}/g, " ").trim();
 }
-
-function feminizeTone(text = "") {
-  return String(text || "");
-}
 // -------- Hinglish prep for TTS (more natural pacing) --------
 function prepHinglishForTTS(text) {
   if (!text) return text;
@@ -604,41 +592,44 @@ function rateLimitChat(req, res, next) {
 app.post('/webhook/razorpay', express.raw({ type: 'application/json' }), async (req, res) => {
   try {
     const signature = req.get('x-razorpay-signature') || '';
-    const expected = crypto.createHmac('sha256', RAZORPAY_WEBHOOK_SECRET)
-                           .update(req.body) // raw Buffer
-                           .digest('hex');
+    const expected = crypto
+      .createHmac('sha256', RAZORPAY_WEBHOOK_SECRET)
+      .update(req.body) // raw Buffer
+      .digest('hex');
+
     if (signature !== expected) {
       return res.status(400).send('Invalid signature');
     }
-    
+
     const event = JSON.parse(req.body.toString('utf8'));
+
     if (event?.event === 'payment_link.paid') {
       const link = event?.payload?.payment_link?.entity;
       const ref  = link?.reference_id || '';
-const { pack, userId } = parseRef(ref);
-const safeUserId = userId || 'anon';
-const paymentId = event?.payload?.payment?.entity?.id || '';
-if (pack && safeUserId) creditPack(safeUserId, pack, paymentId, link?.id || '');
+      const { pack, userId } = parseRef(ref);
+      const safeUserId = userId || 'anon';
+      const paymentId = event?.payload?.payment?.entity?.id || '';
+      if (pack && safeUserId) creditPack(safeUserId, pack, paymentId, link?.id || '');
+    } else if (event?.event === 'payment.captured') {
+      const pay = event?.payload?.payment?.entity;
+      const orderId = pay?.order_id;
+
+      if (orderId) {
+        try {
+          const or = await axios.get(
+            `https://api.razorpay.com/v1/orders/${orderId}`,
+            { auth: { username: RAZORPAY_KEY_ID, password: RAZORPAY_KEY_SECRET } }
+          );
+          const ref = or?.data?.notes?.ref || or?.data?.receipt || '';
+          const { pack, userId } = parseRef(ref);
+          const safeUserId = userId || 'anon';
+          if (pack && safeUserId) creditPack(safeUserId, pack, pay?.id || '', orderId);
+        } catch (e) {
+          console.error('webhook fetch order failed', e?.response?.data || e.message);
+        }
+      }
     }
-    // Checkout (Orders) success → credits by order id
-else if (event?.event === 'payment.captured') {
-  const pay = event?.payload?.payment?.entity;
-  const orderId = pay?.order_id;
-  if (orderId) {
-    try {
-      const or = await axios.get(
-        `https://api.razorpay.com/v1/orders/${orderId}`,
-        { auth: { username: RAZORPAY_KEY_ID, password: RAZORPAY_KEY_SECRET } }
-      );
-      const ref = or?.data?.notes?.ref || or?.data?.receipt || '';
-const { pack, userId } = parseRef(ref);
-const safeUserId = userId || 'anon';
-if (pack && safeUserId) creditPack(safeUserId, pack, pay?.id || '', orderId);
-    } catch (e) {
-      console.error('webhook fetch order failed', e?.response?.data || e.message);
-    }
-  }
-}
+
     return res.json({ ok: true });
   } catch (e) {
     console.error('webhook error', e);
@@ -1464,3 +1455,4 @@ app.get('/wallet', authRequired, (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
