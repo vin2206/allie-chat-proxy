@@ -1271,11 +1271,11 @@ app.get('/test-key', authRequired, async (req, res) => {
 // ---- Razorpay health ping ----
 app.get('/razorpay/health', async (req, res) => {
   try {
-    const r = await axios.get(
-      'https://api.razorpay.com/v1/payment_links?count=1',
-      { auth: { username: RAZORPAY_KEY_ID, password: RAZORPAY_KEY_SECRET } }
-    );
-    res.json({ ok:true, mode: RAZORPAY_KEY_ID.startsWith('rzp_test_') ? 'test' : 'live' });
+    await axios.get(
+  'https://api.razorpay.com/v1/payment_links?count=1',
+  { auth: { username: RAZORPAY_KEY_ID, password: RAZORPAY_KEY_SECRET } }
+);
+return res.json({ ok:true, mode: RAZORPAY_KEY_ID.startsWith('rzp_test_') ? 'test' : 'live' });
   } catch (e) {
     res.status(500).json({ ok:false, details: e?.response?.data || { message: e.message } });
   }
@@ -1420,7 +1420,7 @@ const { wallet, lastCredit } = creditPack(safeUserId, pack, razorpay_payment_id,
 // Verify the Payment Link callback and credit coins
 app.post('/verify-payment-link', async (req, res) => {
   try {
-    const { link_id, payment_id, reference_id, status, signature } = req.body || {};
+    const { link_id, payment_id, reference_id, status } = req.body || {};
     if (!link_id || !payment_id || !reference_id || !status) {
       return res.status(400).json({ ok:false, error:'missing_params' });
     }
@@ -1455,4 +1455,5 @@ app.get('/wallet', authRequired, (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
