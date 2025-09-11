@@ -3,6 +3,41 @@ const axios = require('axios');
 // REMOVE body-parser completely (not needed)
 const cors = require('cors');
 require('dotenv').config();
+// --- Google Sign-In token verification ---
+const { OAuth2Client } = require('google-auth-library');
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '962465973550-2lhard334t8kvjpdhh60catlb1k6fpb6.apps.googleusercontent.com';
+const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
+
+async function verifyGoogleToken(idToken) {
+  if (!idToken) throw new Error('no_token');
+  const ticket = await googleClient.verifyIdToken({ idToken, audience: GOOGLE_CLIENT_ID });
+  const payload = ticket.getPayload();
+  return {
+    email: String(payload.email || '').toLowerCase(),
+    sub: String(payload.sub || ''),
+    picture: payload.picture || ''
+  };
+}
+
+// Middleware: required vs optional auth
+async function authRequired(req, res, next) {
+  try {
+    const m = (req.get('authorization') || '').match(/^Bearer\s+(.+)$/i);
+    const token = m && m[1];
+    req.user = await verifyGoogleToken(token);
+    next();
+  } catch (e) {
+    return res.status(401).json({ ok:false, error:'auth_required' });
+  }
+}
+async function authOptional(req, _res, next) {
+  try {
+    const m = (req.get('authorization') || '').match(/^Bearer\s+(.+)$/i);
+    const token = m && m[1];
+    if (token) req.user = await verifyGoogleToken(token);
+  } catch {}
+  next();
+}
 const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
@@ -20,6 +55,9 @@ const PACKS = {
   daily:  { amount: 49,  coins: 420,  ms: 24*60*60*1000 },
   weekly: { amount: 199, coins: 2000, ms: 7*24*60*60*1000 }
 };
+// Server-enforced costs (match UI)
+const TEXT_COST  = 10;
+const VOICE_COST = 18;
 
 const audioDir = path.join(__dirname, 'audio');
 if (!fs.existsSync(audioDir)) fs.mkdirSync(audioDir);
@@ -36,7 +74,14 @@ const storage = multer.diskStorage({
     cb(null, `${sessionId}-${uniqueSuffix}${ext}`);
   }
 });
-const upload = multer({ storage: storage });
+const upload = multer({
+  storage,
+  limits: { fileSize: 4 * 1024 * 1024 }, // ~4MB cap (~5–8s typical)
+  fileFilter: (req, file, cb) => {
+    const ok = ['audio/webm','audio/ogg','audio/mpeg','audio/mp4'].includes(file.mimetype);
+    cb(ok ? null : new Error('bad_type'), ok);
+  }
+});
 // --- simple JSON-backed wallet ---
 const dataDir   = path.join(__dirname, 'data');
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir);
@@ -48,10 +93,14 @@ function writeJSON(p,obj){ fs.writeFileSync(p, JSON.stringify(obj,null,2)); }
 const walletDB = readJSON(walletFile);
 
 function getUserIdFrom(req) {
+  // Prefer verified Google identity set by auth middleware
+  if (req.user?.sub)   return req.user.sub;
+  if (req.user?.email) return req.user.email;
+
+  // Fallbacks (shouldn't be used for auth decisions)
   const email = String(req.body?.userEmail || req.query?.email || req.get('x-user-email') || '').toLowerCase();
   const sub   = String(req.body?.userSub   || req.query?.sub   || '').trim();
-  const id = sub || email; // prefer Google sub if present
-  return id || 'anon';     // fallback so reference_id never ends up as `${pack}|`
+  return sub || email || 'anon';
 }
 
 function getWallet(userId){
@@ -77,7 +126,7 @@ function creditPack(userId, pack, paymentId, linkId){
   if (w.txns?.some(t => t.paymentId === paymentId || (linkId && t.linkId === linkId))) {
     return { wallet: w, lastCredit: null, dedup: true };
   }
-
+  
   const now = Date.now();
   w.coins = (w.coins|0) + def.coins;
   const base = Math.max(now, w.expires_at|0);
@@ -86,6 +135,16 @@ function creditPack(userId, pack, paymentId, linkId){
   w.txns.push(txn);
   saveWallet(userId, w);
   return { wallet: w, lastCredit: txn };
+}
+function debitCoins(userId, amount, reason) {
+  const w = getWallet(userId);
+  if ((w.coins|0) < amount) return null;  // insufficient
+  w.coins = (w.coins|0) - amount;
+  const txn = { at: Date.now(), type: 'debit', amount, reason };
+  w.txns = Array.isArray(w.txns) ? w.txns : [];
+  w.txns.push(txn);
+  saveWallet(userId, w);
+  return w;
 }
 // Whisper STT function
 async function transcribeWithWhisper(audioPath) {
@@ -128,7 +187,7 @@ const ROLEPLAY_NEEDS_PREMIUM = (process.env.ROLEPLAY_NEEDS_PREMIUM || 'true') ==
 const ALLOWED_ROLES = new Set(['wife','girlfriend','bhabhi','exgf']);
 // -------- Voice usage limits (per session_id, reset daily) --------
 const VOICE_LIMITS = { free: 2, premium: 8 };
-const sessionUsage = new Map(); // sessionId -> { date: 'YYYY-MM-DD', count: 0 }
+const voiceUsage = new Map(); // key (user id) -> { date, count }
 const lastMsgAt = new Map(); // sessionId -> timestamp (ms)
 
 function todayStr() {
@@ -136,27 +195,25 @@ function todayStr() {
   return d.toISOString().slice(0,10);
 }
 
-function getUsage(sessionId) {
+function getUsage(key) {
   const t = todayStr();
-  const rec = sessionUsage.get(sessionId);
+  const rec = voiceUsage.get(key);
   if (!rec || rec.date !== t) {
     const fresh = { date: t, count: 0 };
-    sessionUsage.set(sessionId, fresh);
+    voiceUsage.set(key, fresh);
     return fresh;
   }
   return rec;
 }
-
-function remainingVoice(sessionId, isPremium) {
-  const { count } = getUsage(sessionId);
+function remainingVoice(key, isPremium) {
+  const { count } = getUsage(key);
   const limit = isPremium ? VOICE_LIMITS.premium : VOICE_LIMITS.free;
   return Math.max(0, limit - count);
 }
-
-function bumpVoice(sessionId) {
-  const rec = getUsage(sessionId);
+function bumpVoice(key) {
+  const rec = getUsage(key);
   rec.count += 1;
-  sessionUsage.set(sessionId, rec);
+  voiceUsage.set(key, rec);
 }
 
 // -------- Voice trigger detection --------
@@ -532,6 +589,17 @@ app.use(cors({
   methods: ['GET','POST'],
 }));
 app.options('*', cors());
+// --- very light IP rate-limit for /chat (40 req / minute) ---
+const ipHits = new Map();
+function rateLimitChat(req, res, next) {
+  const ip = req.ip || req.connection?.remoteAddress || 'x';
+  const now = Date.now(), win = 60 * 1000;
+  const list = (ipHits.get(ip) || []).filter(t => now - t < win);
+  list.push(now);
+  ipHits.set(ip, list);
+  if (list.length > 40) return res.status(429).json({ reply: "Too many requests. Slow down a little 😊" });
+  next();
+}
 // ---- Razorpay Webhook (must be ABOVE app.use(express.json())) ----
 app.post('/webhook/razorpay', express.raw({ type: 'application/json' }), async (req, res) => {
   try {
@@ -542,7 +610,7 @@ app.post('/webhook/razorpay', express.raw({ type: 'application/json' }), async (
     if (signature !== expected) {
       return res.status(400).send('Invalid signature');
     }
-
+    
     const event = JSON.parse(req.body.toString('utf8'));
     if (event?.event === 'payment_link.paid') {
       const link = event?.payload?.payment_link?.entity;
@@ -638,12 +706,13 @@ app.post('/report-error', async (req, res) => {
   }
 });
 
-app.post('/chat', upload.single('audio'), async (req, res) => {
+app.post('/chat', authRequired, rateLimitChat, upload.single('audio'), async (req, res) => {
   let userMessage = null;
   let audioPath = null;
 
   // Support session_id for future limit tracking
   const sessionId = req.body.session_id || 'anon';
+  const usageKey = req.user?.sub || req.user?.email || sessionId; // voice limit per real user
   // Read + sanitize role info from client
 const rawMode = (req.body.roleMode || 'stranger').toString().toLowerCase();
 const rawType = (req.body.roleType || '').toString().toLowerCase();
@@ -956,12 +1025,11 @@ const systemPrompt =
   (timeInstruction || "") +
   (dateInstruction || "");
 
-// Owner/premium by email — plus wallet validity
-const userEmail = String(req.body.userEmail || req.get('x-user-email') || "").toLowerCase();
+const verifiedEmail = (req.user?.email || "").toLowerCase(); // from Google token
 const userIdForWallet = getUserIdFrom(req);
 const w = getWallet(userIdForWallet);
 const isWalletActive = (w?.expires_at || 0) > Date.now();
-let isPremium = OWNER_EMAILS.has(userEmail) || isWalletActive;
+let isPremium = OWNER_EMAILS.has(verifiedEmail) || isWalletActive;
 
 if (!isPremium && userReplyCount >= 10) {
 
@@ -977,6 +1045,22 @@ if (ROLEPLAY_NEEDS_PREMIUM && roleMode === 'roleplay' && !isPremium) {
     reply: "Roleplay unlock karo na… phir main proper wife/bhabhi/gf/ex-gf vibe mein aaongi 💕",
     locked: true
   });
+}
+  // --- Server-side coin pre-check (deduct later only if we actually reply) ---
+const willVoice = !!req.file || !!req.body.wantVoice || wantsVoice((userMessage || "").toLowerCase());
+const requiredCoins = willVoice ? VOICE_COST : TEXT_COST;
+
+const userIdForCharges = getUserIdFrom(req);
+const isOwnerByEmail = OWNER_EMAILS.has((req.user?.email || '').toLowerCase());
+
+if (!isOwnerByEmail) {
+  const wcheck = getWallet(userIdForCharges);
+  if ((wcheck.coins | 0) < requiredCoins) {
+    return res.status(200).json({
+      reply: "Balance low hai. Recharge kar lo na, phir main saath rahungi 💖",
+      locked: true
+    });
+  }
 }
 
   // ------------------ Input Format Validation ------------------
@@ -1085,7 +1169,7 @@ const userSentAudio  = !!req.file;
 let triggerVoice = userSentAudio || userAskedVoice;
 
 // use the existing isPremium you already set above
-const remaining = remainingVoice(sessionId, isPremium);
+const remaining = remainingVoice(usageKey, isPremium);
 
 // If user requested voice but limit over, send polite text fallback
 if (triggerVoice && remaining <= 0) {
@@ -1118,12 +1202,16 @@ ttsText = (ttsText || "")
     const audioFileName = `${sessionId}-${Date.now()}.mp3`;
     const audioFilePath = path.join(audioDir, audioFileName);
     await generateShraddhaVoice(ttsText, audioFilePath);
-    bumpVoice(sessionId); // consume one quota
-    console.log(`[voice] +1 for session=${sessionId} remaining=${remainingVoice(sessionId, isPremium)}`);
+    bumpVoice(usageKey); // consume one quota
+    console.log(`[voice] +1 for session=${sessionId} remaining=${remainingVoice(usageKey, isPremium)}`);
 
     const hostBase = process.env.SERVER_URL || `${req.protocol}://${req.get('host')}`;
 const audioUrl = `${hostBase}/audio/${audioFileName}`;
-    return res.json({ audioUrl }); // audio-only response
+    let newWallet = null;
+if (!OWNER_EMAILS.has((req.user?.email || '').toLowerCase())) {
+  newWallet = debitCoins(userIdForCharges, VOICE_COST, 'voice');
+}
+return res.json({ audioUrl, wallet: newWallet || getWallet(userIdForCharges) });
   } catch (e) {
     console.error("TTS generation failed:", e);
     return res.json({
@@ -1132,11 +1220,14 @@ const audioUrl = `${hostBase}/audio/${audioFileName}`;
   }
 }
 
-// Otherwise, plain text response
 const safeReply = cleanedText && cleanedText.length
   ? clampWordsSmart(cleanedText, maxWords)
   : "Hmm, bolo—kya soch rahe the? 🙂";
-return res.json({ reply: safeReply });
+let newWallet = null;
+if (!OWNER_EMAILS.has((req.user?.email || '').toLowerCase())) {
+  newWallet = debitCoins(userIdForCharges, TEXT_COST, 'text');
+}
+return res.json({ reply: safeReply, wallet: newWallet || getWallet(userIdForCharges) });
 
   } catch (err) {
     console.error("Final error:", err);
@@ -1165,7 +1256,10 @@ app.get('/config', (req, res) => {
   });
 });
 
-app.get('/test-key', async (req, res) => {
+app.get('/test-key', authRequired, async (req, res) => {
+  if (!OWNER_EMAILS.has((req.user?.email || '').toLowerCase())) {
+    return res.status(403).json({ ok:false, error:'forbidden' });
+  }
   try {
     const response = await fetch("https://openrouter.ai/api/v1/models", {
       headers: {
@@ -1362,7 +1456,7 @@ const { wallet, lastCredit } = creditPack(safeUserId, pack, payment_id, link_id)
 });
 
 // Wallet
-app.get('/wallet', (req, res) => {
+app.get('/wallet', authRequired, (req, res) => {
   const userId = getUserIdFrom(req);
   const w = getWallet(userId);
   res.json({ ok:true, wallet: w });
@@ -1370,10 +1464,3 @@ app.get('/wallet', (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-
-
-
-
-
-
-
