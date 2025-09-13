@@ -102,6 +102,22 @@ function saveWallet(userId, w){
   walletDB[userId] = w;
   writeJSON(walletFile, walletDB);
 }
+// --- One-time welcome bonus (server-authoritative) ---
+const WELCOME_BONUS = 100;
+
+function ensureWelcome(userId) {
+  const w = getWallet(userId);
+// 🔒 ensure txns exists (handles older wallet entries gracefully)
+  w.txns = Array.isArray(w.txns) ? w.txns : [];
+  if (w.welcome_claimed === true) return w;   // already credited
+
+  w.coins = (w.coins | 0) + WELCOME_BONUS;
+  w.welcome_claimed = true;
+  w.txns.push({ at: Date.now(), type: 'credit', pack: 'welcome', coins: WELCOME_BONUS });
+
+  saveWallet(userId, w);
+  return w;
+}
 
 function makeRef(userId, pack){ return `${pack}|${userId}`; }
 function parseRef(ref) {
@@ -112,19 +128,25 @@ function parseRef(ref) {
 function creditPack(userId, pack, paymentId, linkId){
   const def = PACKS[pack];
   if (!def) return null;
+
   const w = getWallet(userId);
 
+  // ✅ make sure txns exists (older wallets may not have it)
+  w.txns = Array.isArray(w.txns) ? w.txns : [];
+
   // DEDUPE: avoid double credit on webhook retries
-  if (w.txns?.some(t => t.paymentId === paymentId || (linkId && t.linkId === linkId))) {
+  if (w.txns.some(t => t.paymentId === paymentId || (linkId && t.linkId === linkId))) {
     return { wallet: w, lastCredit: null, dedup: true };
   }
-  
+
   const now = Date.now();
-  w.coins = (w.coins|0) + def.coins;
-  const base = Math.max(now, w.expires_at|0);
+  w.coins = (w.coins | 0) + def.coins;
+  const base = Math.max(now, w.expires_at | 0);
   w.expires_at = base + def.ms;
+
   const txn = { at: now, type: 'credit', pack, coins: def.coins, paymentId, linkId };
   w.txns.push(txn);
+
   saveWallet(userId, w);
   return { wallet: w, lastCredit: txn };
 }
@@ -1018,7 +1040,7 @@ const systemPrompt =
 
 const verifiedEmail = (req.user?.email || "").toLowerCase(); // from Google token
 const userIdForWallet = getUserIdFrom(req);
-const w = getWallet(userIdForWallet);
+const w = ensureWelcome(userIdForWallet);   // 👈 guarantees +100 is applied even if /chat hits first
 const isWalletActive = (w?.expires_at || 0) > Date.now();
 let isPremium = OWNER_EMAILS.has(verifiedEmail) || isWalletActive;
 
@@ -1449,11 +1471,12 @@ const { wallet, lastCredit } = creditPack(safeUserId, pack, payment_id, link_id)
 // Wallet
 app.get('/wallet', authRequired, (req, res) => {
   const userId = getUserIdFrom(req);
-  const w = getWallet(userId);
-  res.json({ ok:true, wallet: w });
+  const w = ensureWelcome(userId);   // one-time +100, then no-op
+  res.json({ ok: true, wallet: w });
 });
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
