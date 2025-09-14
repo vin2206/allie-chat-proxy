@@ -2,11 +2,46 @@ const express = require('express');
 const axios = require('axios');
 // REMOVE body-parser completely (not needed)
 const cors = require('cors');
+const cookieParser = require('cookie-parser');
+const jwt = require('jsonwebtoken');
 require('dotenv').config();
 // --- Google Sign-In token verification ---
 const { OAuth2Client } = require('google-auth-library');
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '962465973550-2lhard334t8kvjpdhh60catlb1k6fpb6.apps.googleusercontent.com';
 const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
+// --- First-party rolling session (httpOnly cookie) ---
+const SESSION_SECRET = process.env.SESSION_SECRET || 'change-me-in-env';
+const SESSION_COOKIE = 'bb_sess';
+const SESSION_TTL_MS = 14 * 24 * 60 * 60 * 1000;           // 14 days
+const SESSION_ROLLING_THRESHOLD_MS = 3 * 24 * 60 * 60 * 1000; // renew when <3d left
+
+function mintSession(payload) {
+  const now = Math.floor(Date.now() / 1000);
+  const exp = now + Math.floor(SESSION_TTL_MS / 1000);
+  // Keep only what the app needs
+  const body = { sub: payload.sub, email: payload.email, picture: payload.picture, iat: now, exp };
+  return jwt.sign(body, SESSION_SECRET);
+}
+
+function verifySessionCookie(req) {
+  const raw = req.cookies?.[SESSION_COOKIE];
+  if (!raw) return null;
+  try {
+    return jwt.verify(raw, SESSION_SECRET);
+  } catch {
+    return null;
+  }
+}
+
+function setSessionCookie(res, token) {
+  res.cookie(SESSION_COOKIE, token, {
+    httpOnly: true,
+    secure: true,          // required for SameSite=None
+    sameSite: 'none',      // cross-site (frontend and API are different domains)
+    path: '/',
+    maxAge: SESSION_TTL_MS
+  });
+}
 
 async function verifyGoogleToken(idToken) {
   if (!idToken) throw new Error('no_token');
@@ -19,13 +54,33 @@ async function verifyGoogleToken(idToken) {
   };
 }
 
-// Middleware: required vs optional auth
 async function authRequired(req, res, next) {
+  // 1) Try our own rolling session cookie first
+  const sess = verifySessionCookie(req);
+  if (sess?.sub || sess?.email) {
+    req.user = { email: String(sess.email || '').toLowerCase(), sub: String(sess.sub || ''), picture: sess.picture || '' };
+
+    // Rolling renewal: if close to expiry, mint a fresh cookie
+    const msLeft = (sess.exp * 1000) - Date.now();
+    if (msLeft < SESSION_ROLLING_THRESHOLD_MS) {
+      const fresh = mintSession(req.user);
+      setSessionCookie(res, fresh);
+    }
+    return next();
+  }
+
+  // 2) Fallback: accept Google ID token (first login or cookie lost)
   try {
     const m = (req.get('authorization') || '').match(/^Bearer\s+(.+)$/i);
-    const token = m && m[1];
-    req.user = await verifyGoogleToken(token);
-    next();
+    const idToken = m && m[1];
+    const verified = await verifyGoogleToken(idToken);
+    req.user = verified;
+
+    // Mint first-party session for next requests
+    const token = mintSession(verified);
+    setSessionCookie(res, token);
+
+    return next();
   } catch (e) {
     return res.status(401).json({ ok:false, error:'auth_required' });
   }
@@ -593,12 +648,24 @@ const ALLOWED_ORIGINS = new Set([
 
 app.use(cors({
   origin(origin, cb) {
-    if (!origin) return cb(null, true);                // curl/mobile/native
+    if (!origin) return cb(null, true);
     cb(null, ALLOWED_ORIGINS.has(origin));
   },
   methods: ['GET','POST'],
+  credentials: true,      // <— allow cookies
 }));
-app.options('*', cors());
+app.options(
+  '*',
+  cors({
+    origin(origin, cb) {
+      if (!origin) return cb(null, true);
+      cb(null, ALLOWED_ORIGINS.has(origin));
+    },
+    methods: ['GET', 'POST'],
+    credentials: true,
+  })
+);
+app.use(cookieParser());  // <— read cookies
 // --- very light IP rate-limit for /chat (40 req / minute) ---
 const ipHits = new Map();
 function rateLimitChat(req, res, next) {
@@ -1477,6 +1544,7 @@ app.get('/wallet', authRequired, (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
