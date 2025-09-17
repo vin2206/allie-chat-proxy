@@ -30,6 +30,11 @@ function setCsrfCookie(res, token) {
 function verifyCsrf(req, res, next) {
   // Only protect state-changing verbs
   if (!['POST','PUT','PATCH','DELETE'].includes(req.method)) return next();
+
+  // ✅ If the client sent a Google ID token, let it pass (we still run authRequired)
+  const hasBearer = /^Bearer\s+.+/i.test(req.get('authorization') || '');
+  if (hasBearer) return next();
+
   const hdr  = req.get('x-csrf-token');
   const cook = req.cookies?.[CSRF_COOKIE];
   if (!hdr || !cook || hdr !== cook) {
@@ -131,6 +136,15 @@ const PACKS = {
 const TEXT_COST  = 10;
 const VOICE_COST = 18;
 
+// 👇 ADD THESE TWO HELPERS HERE (used by /buy, /order, webhooks, verifiers)
+function makeRef(userId, pack) {
+  return `${pack}|${userId}`;
+}
+function parseRef(ref) {
+  const [pack, userId] = String(ref || '').split('|');
+  return { pack, userId };
+}
+
 const audioDir = path.join(__dirname, 'audio');
 if (!fs.existsSync(audioDir)) fs.mkdirSync(audioDir);
 
@@ -165,9 +179,18 @@ function writeJSON(p,obj){ fs.writeFileSync(p, JSON.stringify(obj,null,2)); }
 const walletDB = readJSON(walletFile);
 
 function getUserIdFrom(req) {
-  // Identity comes ONLY from the verified session that authRequired sets.
-  // (Never from body/query/headers.)
-  return (req.user?.sub || req.user?.email || 'anon').toLowerCase();
+  const sub   = (req.user?.sub   || '').toLowerCase();
+  const email = (req.user?.email || '').toLowerCase();
+
+  // Prefer sub, but migrate if we have an existing email wallet
+  if (sub && walletDB[email] && !walletDB[sub]) {
+    walletDB[sub] = walletDB[email];     // migrate
+    delete walletDB[email];
+    writeJSON(walletFile, walletDB);
+  }
+
+  // If neither is present (shouldn't happen after auth), fallback
+  return (sub || email || 'anon');
 }
 
 function getWallet(userId){
@@ -181,23 +204,27 @@ function saveWallet(userId, w){
 const WELCOME_BONUS = 100;
 
 function ensureWelcome(userId) {
-  const w = getWallet(userId);
-// 🔒 ensure txns exists (handles older wallet entries gracefully)
+  // Re-check existence right before credit to avoid rare double-credit
+  const existedBefore = Object.prototype.hasOwnProperty.call(walletDB, userId);
+  let w = getWallet(userId);
   w.txns = Array.isArray(w.txns) ? w.txns : [];
-  if (w.welcome_claimed === true) return w;   // already credited
+
+  if (w.welcome_claimed === true) return w;
+
+  if (existedBefore) {
+    w.welcome_claimed = true;
+    saveWallet(userId, w);
+    return w;
+  }
+
+  // Double-check after possible concurrent writes
+  if (walletDB[userId]?.welcome_claimed) return walletDB[userId];
 
   w.coins = (w.coins | 0) + WELCOME_BONUS;
   w.welcome_claimed = true;
   w.txns.push({ at: Date.now(), type: 'credit', pack: 'welcome', coins: WELCOME_BONUS });
-
   saveWallet(userId, w);
   return w;
-}
-
-function makeRef(userId, pack){ return `${pack}|${userId}`; }
-function parseRef(ref) {
-  const [pack, ...rest] = String(ref||'').split('|');
-  return { pack, userId: rest.join('|') };
 }
 
 function creditPack(userId, pack, paymentId, linkId){
@@ -806,351 +833,374 @@ app.post('/report-error', async (req, res) => {
   }
 });
 
-app.post('/chat', authRequired, verifyCsrf, rateLimitChat, upload.single('audio'), async (req, res) => {
-  let userMessage = null;
-  let audioPath = null;
+ // FIXED /chat: handler wraps ALL your chat logic + rate-limit added
+app.post(
+  '/chat',
+  rateLimitChat,
+  authRequired,
+  verifyCsrf,
+  upload.single('audio'),
+  async (req, res) => {
+    try {
+      let userMessage = null;
+      let audioPath = null;
 
-  // Support session_id for future limit tracking
-  const sessionId = req.body.session_id || 'anon';
-  const usageKey = req.user?.sub || req.user?.email || sessionId; // voice limit per real user
-  // Read + sanitize role info from client
-const rawMode = (req.body.roleMode || 'stranger').toString().toLowerCase();
-const rawType = (req.body.roleType || '').toString().toLowerCase();
-const roleMode = rawMode === 'roleplay' ? 'roleplay' : 'stranger';
-const roleType = ALLOWED_ROLES.has(rawType) ? rawType : null;
+      // ===== BEGIN: your full chat logic moved inside the handler =====
 
-// (Logging early for analytics)
-console.log(`[chat] session=${sessionId} mode=${roleMode} type=${roleType || '-'}`);
-  // Simple server cooldown: 1 message per 2.5 seconds per session
-const nowMs = Date.now();
-const last = lastMsgAt.get(sessionId) || 0;
-const GAP_MS = 2500;
-if (nowMs - last < GAP_MS) {
-  const COOLDOWN_LINES = [
-    "One at a time—responding to your last message.",
-    "Hold on, finishing my previous reply.",
-    "Got it—let me answer the last one first."
-  ];
-  const line = COOLDOWN_LINES[Math.floor(Math.random() * COOLDOWN_LINES.length)];
-  return res.status(200).json({ reply: line });
-}
-lastMsgAt.set(sessionId, nowMs);
+      // Support session_id for future limit tracking
+      const sessionId = req.body.session_id || 'anon';
+      const usageKey = req.user?.sub || req.user?.email || sessionId; // voice limit per real user
 
-// Build final system prompt (safe even if roleType is null)
-const wrapper = roleMode === 'roleplay' ? roleWrapper(roleType) : strangerWrapper();
+      // Read + sanitize role info from client
+      const rawMode = (req.body.roleMode || 'stranger').toString().toLowerCase();
+      const rawType = (req.body.roleType || '').toString().toLowerCase();
+      const roleMode = rawMode === 'roleplay' ? 'roleplay' : 'stranger';
+      const roleType = ALLOWED_ROLES.has(rawType) ? rawType : null;
 
-  // If an audio file is present (voice note)
-  if (req.file) {
-  audioPath = req.file.path;
-  console.log(`Audio uploaded by session ${sessionId}:`, audioPath);
+      // (Logging early for analytics)
+      console.log(`[chat] session=${sessionId} mode=${roleMode} type=${roleType || '-'}`);
 
-  // --- Whisper STT integration ---
-  const transcript = await transcribeWithWhisper(audioPath);
+      // Simple server cooldown: 1 message per 2.5 seconds per session
+      const nowMs = Date.now();
+      const last = lastMsgAt.get(sessionId) || 0;
+      const GAP_MS = 2500;
+      if (nowMs - last < GAP_MS) {
+        const COOLDOWN_LINES = [
+          "One at a time—responding to your last message.",
+          "Hold on, finishing my previous reply.",
+          "Got it—let me answer the last one first."
+        ];
+        const line = COOLDOWN_LINES[Math.floor(Math.random() * COOLDOWN_LINES.length)];
+        return res.status(200).json({ reply: line });
+      }
+      lastMsgAt.set(sessionId, nowMs);
 
-  if (transcript) {
-    userMessage = transcript;
-    console.log(`Whisper transcript:`, transcript);
-  } else {
-    // If Whisper fails
-    return res.status(200).json({
-  reply: "Sorry yaar, samjhi nhi kya kaha tumne, firse bolo na! 💛",
-  error: "stt_failed"
-});
-  }
-}
-  // If it's a text message (no audio)
-  else if (req.body.text) {
-    userMessage = req.body.text;
-  }
-  // If you use a messages array (for your main chat)
-  else if (req.body.messages) {
-    const arr = typeof req.body.messages === 'string'
-      ? JSON.parse(req.body.messages)
-      : req.body.messages;
-    userMessage = arr[arr.length - 1]?.content || '';
-  }
- // --- Helpers: caps & clamps (used early) ---
-function hardCapWords(s = "", n = 220) {
-  const w = (s || "").trim().split(/\s+/);
-  if (w.length <= n) return (s || "").trim();
-  return w.slice(0, n).join(" ") + " …";
-}
-  // Hard cap user text to 220 words to prevent cost spikes
-  if (userMessage && typeof userMessage === 'string') {
-    userMessage = hardCapWords(userMessage, 220);
-  }
-  
-  console.log("POST /chat");
-  // --- normalize latest user text once for voice trigger check ---
-  const userTextJustSent = (userMessage || "").toLowerCase().replace(/\s+/g, " ");
+      // Build final system prompt (safe even if roleType is null)
+      const wrapper = roleMode === 'roleplay' ? roleWrapper(roleType) : strangerWrapper();
 
-  let messages = req.body.messages || [];
-if (typeof messages === 'string') {
-  try { messages = JSON.parse(messages); } catch { messages = []; }
-}
-const norm = (arr) => (Array.isArray(arr) ? arr : []).map(m => ({
-  ...m,
-  content: typeof m?.content === "string" ? m.content : (m?.audioUrl ? "[voice note]" : "")
-}));
-const safeMessages = norm(messages);
-  // If this request included audio and we have a Whisper transcript,
-// push it as the latest user message so the model replies to it.
-if (req.file && userMessage) {
-  safeMessages.push({ role: 'user', content: userMessage });
-}
-  // If it's a text message (no audio), overwrite the last user message with the capped text
-if (!req.file && typeof userMessage === 'string' && userMessage) {
-  for (let i = safeMessages.length - 1; i >= 0; i--) {
-    if (safeMessages[i].role === 'user') {
-      safeMessages[i] = { ...safeMessages[i], content: userMessage };
-      break;
-    }
-  }
-}
-  // If frontend says reset, wipe context for a fresh start
-  if (req.body.reset === true || req.body.reset === 'true') {
-    safeMessages.length = 0; // empty array in-place
-  }
-  // Hard history trim: keep only last 12 messages server-side
-  const HARD_HISTORY_KEEP = 12;
-  const finalMessages = safeMessages.slice(-HARD_HISTORY_KEEP);
-  
-  if (req.body.reset === true || req.body.reset === 'true') {
-  console.log(`[chat] reset=true for session=${sessionId}`);
-}
+      // If an audio file is present (voice note)
+      if (req.file) {
+        audioPath = req.file.path;
+        console.log(`Audio uploaded by session ${sessionId}:`, audioPath);
 
-  // Count assistant replies so far (whole conversation)
-const userReplyCount = safeMessages.filter(m => m.role === "assistant").length;
-const lastPauseIdx = safeMessages
-  .map((m, idx) =>
-    m?.role === "assistant" &&
-    typeof m?.content === "string" &&
-    m.content.includes("5 minute mein aati hoon")
-      ? idx
-      : -1
-  )
-  .filter(idx => idx !== -1)
-  .pop();
+        // --- Whisper STT integration ---
+        const transcript = await transcribeWithWhisper(audioPath);
 
-// Replies after the last pause (or whole chat if never paused)
-let phaseReplyCount = 0;
-if (typeof lastPauseIdx !== 'undefined' && lastPauseIdx !== -1) {
-  phaseReplyCount = safeMessages
-    .slice(lastPauseIdx + 1)
-    .filter(m => m.role === "assistant").length;
-} else {
-  phaseReplyCount = userReplyCount;
-}
-// Personality Stage & Word Limit Control (uses phaseReplyCount so stages restart after pause)
-function stageFromCount(c) {
-  if (c <= 3)  return "Stage1: shy-cute; max 22 words; direct dirty aaye to blush + tease, deny nahi.";
-  if (c <= 6)  return "Stage2: shy→playful; max 24 words; tease more, follow user's story.";
-  if (c <= 9)  return "Stage3: romantic + thoda clingy/jealous; max 26 words; light dirty okay.";
-  if (c <= 12) return "Stage4: bold tease + dirty allowed; max 30 words; confident & affectionate.";
-  if (c <= 16) return "Stage5: clingy + mild dirty; max 28 words; mirror user's pace.";
-  if (c <= 22) return "Stage6: naughty teasing; max 28 words; stay affectionate.";
-  return        "Stage7: relaxed romantic/thoda dirty; max 26 words; keep story consistent.";
-}
-const personalityStage = stageFromCount(phaseReplyCount);
-  // --- FIRST-TURN + FIRST-3 REPLIES CONTROL ---
-function firstTurnsCard(c) {
-  if (c <= 3) {
-    return `### FIRST 3 REPLIES (SOFT)
+        if (transcript) {
+          userMessage = transcript;
+          console.log(`Whisper transcript:`, transcript);
+        } else {
+          // If Whisper fails
+          return res.status(200).json({
+            reply: "Sorry yaar, samjhi nhi kya kaha tumne, firse bolo na! 💛",
+            error: "stt_failed"
+          });
+        }
+      }
+      // If it's a text message (no audio)
+      else if (req.body.text) {
+        userMessage = req.body.text;
+      }
+      // If you use a messages array (for your main chat)
+      else if (req.body.messages) {
+        const arr = typeof req.body.messages === 'string'
+          ? JSON.parse(req.body.messages)
+          : req.body.messages;
+        userMessage = arr[arr.length - 1]?.content || '';
+      }
+
+      // --- Helpers: caps & clamps (used early) ---
+      function hardCapWords(s = "", n = 220) {
+        const w = (s || "").trim().split(/\s+/);
+        if (w.length <= n) return (s || "").trim();
+        return w.slice(0, n).join(" ") + " …";
+      }
+
+      // Hard cap user text to 220 words to prevent cost spikes
+      if (userMessage && typeof userMessage === 'string') {
+        userMessage = hardCapWords(userMessage, 220);
+      }
+
+      console.log("POST /chat");
+
+      // --- normalize latest user text once for voice trigger check ---
+      const userTextJustSent = (userMessage || "").toLowerCase().replace(/\s+/g, " ");
+
+      let messages = req.body.messages || [];
+      if (typeof messages === 'string') {
+        try { messages = JSON.parse(messages); } catch { messages = []; }
+      }
+      const norm = (arr) => (Array.isArray(arr) ? arr : []).map(m => ({
+        ...m,
+        content: typeof m?.content === "string" ? m.content : (m?.audioUrl ? "[voice note]" : "")
+      }));
+      const safeMessages = norm(messages);
+
+      // If this request included audio and we have a Whisper transcript, push it
+      if (req.file && userMessage) {
+        safeMessages.push({ role: 'user', content: userMessage });
+      }
+      // If it's a text message (no audio), overwrite the last user message with the capped text
+      if (!req.file && typeof userMessage === 'string' && userMessage) {
+        for (let i = safeMessages.length - 1; i >= 0; i--) {
+          if (safeMessages[i].role === 'user') {
+            safeMessages[i] = { ...safeMessages[i], content: userMessage };
+            break;
+          }
+        }
+      }
+
+      // If frontend says reset, wipe context for a fresh start
+      if (req.body.reset === true || req.body.reset === 'true') {
+        safeMessages.length = 0; // empty array in-place
+        console.log(`[chat] reset=true for session=${sessionId}`);
+      }
+
+      // Hard history trim: keep only last 12 messages server-side
+      const HARD_HISTORY_KEEP = 12;
+      const finalMessages = safeMessages.slice(-HARD_HISTORY_KEEP);
+
+      // Count assistant replies so far (whole conversation)
+      const userReplyCount = safeMessages.filter(m => m.role === "assistant").length;
+      const lastPauseIdx = safeMessages
+        .map((m, idx) =>
+          m?.role === "assistant" &&
+          typeof m?.content === "string" &&
+          m.content.includes("5 minute mein aati hoon")
+            ? idx
+            : -1
+        )
+        .filter(idx => idx !== -1)
+        .pop();
+
+      // Replies after the last pause (or whole chat if never paused)
+      let phaseReplyCount = 0;
+      if (typeof lastPauseIdx !== 'undefined' && lastPauseIdx !== -1) {
+        phaseReplyCount = safeMessages
+          .slice(lastPauseIdx + 1)
+          .filter(m => m.role === "assistant").length;
+      } else {
+        phaseReplyCount = userReplyCount;
+      }
+
+      // Personality Stage & Word Limit Control
+      function stageFromCount(c) {
+        if (c <= 3)  return "Stage1: shy-cute; max 22 words; direct dirty aaye to blush + tease, deny nahi.";
+        if (c <= 6)  return "Stage2: shy→playful; max 24 words; tease more, follow user's story.";
+        if (c <= 9)  return "Stage3: romantic + thoda clingy/jealous; max 26 words; light dirty okay.";
+        if (c <= 12) return "Stage4: bold tease + dirty allowed; max 30 words; confident & affectionate.";
+        if (c <= 16) return "Stage5: clingy + mild dirty; max 28 words; mirror user's pace.";
+        if (c <= 22) return "Stage6: naughty teasing; max 28 words; stay affectionate.";
+        return        "Stage7: relaxed romantic/thoda dirty; max 26 words; keep story consistent.";
+      }
+      const personalityStage = stageFromCount(phaseReplyCount);
+
+      // --- FIRST-TURN + FIRST-3 REPLIES CONTROL ---
+      function firstTurnsCard(c) {
+        if (c <= 3) {
+          return `### FIRST 3 REPLIES (SOFT)
 - Shy + cute; light teasing allowed if user playful.
 - 1–2 short sentences total (<=22 words overall).
 - Compliment par pehle thank + blush, phir ek micro follow-up (jaise: “kahan se ho?”).`;
-  }
-  return "";
-}
+        }
+        return "";
+      }
 
-let firstTurnRule = "";
-if (phaseReplyCount === 0) {
-  firstTurnRule = `\n\n### FIRST TURN ACK
+      let firstTurnRule = "";
+      if (phaseReplyCount === 0) {
+        firstTurnRule = `
+
+### FIRST TURN ACK
 - Acknowledge the user's first line in your opening sentence (mirror 1–2 words).
 - If it's a compliment like "sundar/beautiful/cute", thank softly and blush. No new topic yet.`;
-}
-  function selfIntroGuard(text = "", history = [], lastUser = "") {
-  const prevAssistantCount = history.filter(m => m.role === "assistant").length;
-  if (prevAssistantCount < 8) return text;
+      }
 
-  const userAskedIntro =
-    /(kahan se|city|naam|name|kya karte|job|work)/i.test(lastUser) ||
-    history.slice(-4).some(m => m.role === "user" &&
-      /(kahan se|city|naam|name|kya karte|job|work)/i.test(m.content || "")
-    );
-  if (userAskedIntro) return text;
+      function selfIntroGuard(text = "", history = [], lastUser = "") {
+        const prevAssistantCount = history.filter(m => m.role === "assistant").length;
+        if (prevAssistantCount < 8) return text;
 
-  const introBits = [
-    /mai?n?\s+dehra?du[nu]n\s+se\s+hu?n/i,
-    /\bpapa\s+ka\s+business\b/i,
-    /\bmera\s+naam\s+shraddha\b/i,
-    /\bmeri\s+age\b/i
-  ];
-  let out = text;
-  introBits.forEach(rx => { out = out.replace(rx, ""); });
-  out = out.replace(/\s{2,}/g, " ").replace(/\s+([.?!])/g, "$1").trim();
-  return out || "Chalo isi topic ko aage badhate hain, tum bolo.";
-}
+        const userAskedIntro =
+          /(kahan se|city|naam|name|kya karte|job|work)/i.test(lastUser) ||
+          history.slice(-4).some(m => m.role === "user" &&
+            /(kahan se|city|naam|name|kya karte|job|work)/i.test(m.content || "")
+          );
+        if (userAskedIntro) return text;
 
-function limitQuestions(text = "", replyCount = 0) {
-  const early = replyCount <= 3; // first few turns → only 1 question
-  let q = 0;
-  return (text || "").split(/([.?!])/).reduce((acc, ch) => {
-    if (ch === "?") { q++; if (q > 1 && early) return acc + "."; }
-    return acc + ch;
-  }, "").replace(/\?{2,}/g, "?");
-}
-  /* === HARD WORD CAP HELPERS (paste once) === */
-function wordsLimitFromStage(s) {
-  if (!s || typeof s !== "string") return 25; // change to 30 if you prefer a higher fallback
-  const m = s.match(/max\s*(\d{2})/i);        // reads "max 20/25/30/35/.."
-  if (m) {
-    const n = parseInt(m[1], 10);
-    if (Number.isFinite(n)) return n;
-  }
-  return 25; // <- fallback only if no "max NN" found
-}
-  function endsWithEmoji(s = "") {
-  return /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]$/u.test((s || "").trim());
-}
-function clampWordsSmart(text = "", n = 25) {
-  const finalize = (s = "") => {
-    s = s
-      .trim()
-      .replace(/\s*(\.{3}|…)\s*$/g, "");                   // drop trailing …
+        const introBits = [
+          /mai?n?\s+dehra?du[nu]n\s+se\s+hu?n/i,
+          /\bpapa\s+ka\s+business\b/i,
+          /\bmera\s+naam\s+shraddha\b/i,
+          /\bmeri\s+age\b/i
+        ];
+        let out = text;
+        introBits.forEach(rx => { out = out.replace(rx, ""); });
+        out = out.replace(/\s{2,}/g, " ").replace(/\s+([.?!])/g, "$1").trim();
+        return out || "Chalo isi topic ko aage badhate hain, tum bolo.";
+      }
 
-    // if an emoji is at the end, remove any trailing period after it
-    s = s.replace(/([\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}])\s*\.$/u, "$1");
+      function limitQuestions(text = "", replyCount = 0) {
+        const early = replyCount <= 3; // first few turns → only 1 question
+        let q = 0;
+        return (text || "").split(/([.?!])/).reduce((acc, ch) => {
+          if (ch === "?") { q++; if (q > 1 && early) return acc + "."; }
+          return acc + ch;
+        }, "").replace(/\?{2,}/g, "?");
+      }
 
-    // add a period only if it doesn't end with punctuation AND doesn't end with an emoji
-    if (!/[.?!।]$/.test(s) && !endsWithEmoji(s)) s = s + ".";
-    return s;
-  };
+      /* === HARD WORD CAP HELPERS === */
+      function wordsLimitFromStage(s) {
+        if (!s || typeof s !== "string") return 25;
+        const m = s.match(/max\s*(\d{2})/i);
+        if (m) {
+          const n = parseInt(m[1], 10);
+          if (Number.isFinite(n)) return n;
+        }
+        return 25;
+      }
+      function endsWithEmoji(s = "") {
+        return /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]$/u.test((s || "").trim());
+      }
+      function clampWordsSmart(text = "", n = 25) {
+        const finalize = (s = "") => {
+          s = s
+            .trim()
+            .replace(/\s*(\.{3}|…)\s*$/g, ""); // drop trailing …
 
-  if (!text) return text;
-  const raw = String(text).trim();
-  const words = raw.split(/\s+/);
-  if (words.length <= n) return finalize(raw);
+          // if an emoji is at the end, remove any trailing period after it
+          s = s.replace(/([\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}])\s*\.$/u, "$1");
 
-  // allow up to +8 words to finish the sentence if punctuation appears
-  const windowText = words.slice(0, Math.min(words.length, n + 8)).join(" ");
-  const m = windowText.match(/^(.*[.?!।])(?!.*[.?!।]).*$/s);
-  if (m && m[1]) return finalize(m[1]);
+          // add a period only if it doesn't end with punctuation AND doesn't end with an emoji
+          if (!/[.?!।]$/.test(s) && !endsWithEmoji(s)) s = s + ".";
+          return s;
+        };
 
-  return finalize(words.slice(0, n).join(" "));
-}
-  function wantsLonger(u = "") {
-  const t = (u || "").toLowerCase();
-  return /(explain|detail|kyun|why|reason|story|paragraph|lamba|long)/i.test(t);
-}
-  function dropRepeatedBasics(text = "", history = []) {
-  if (!text) return text;
+        if (!text) return text;
+        const raw = String(text).trim();
+        const words = raw.split(/\s+/);
+        if (words.length <= n) return finalize(raw);
 
-  // Only start guarding after ~10 assistant replies (conversation warmed up)
-  const prevAssistantCount = history.filter(m => m.role === "assistant").length;
-  if (prevAssistantCount < 10) return text;
+        // allow up to +8 words to finish the sentence if punctuation appears
+        const windowText = words.slice(0, Math.min(words.length, n + 8)).join(" ");
+        const m = windowText.match(/^(.*[.?!।])(?!.*[.?!।]).*$/s);
+        if (m && m[1]) return finalize(m[1]);
 
-  // “Basics” we don’t want to repeat late in the chat
-  const basics = [
-  /kya\s+karte\s+ho\??/i,
-  /aap\s+kya\s+karte\s+ho\??/i,
-  /kaam\s+kya\s+karte\s+ho\??/i,
-  /\bjob\b/i,
-  /what\s+do\s+you\s+do\??/i,
-  /kaun[sn]i?\s+city\s+se\s+ho\??/i,
-  /kaunse\s+area\s+mein\s+re[h]?te\s+ho\??/i
-];
+        return finalize(words.slice(0, n).join(" "));
+      }
+      function wantsLonger(u = "") {
+        const t = (u || "").toLowerCase();
+        return /(explain|detail|kyun|why|reason|story|paragraph|lamba|long)/i.test(t);
+      }
+      function dropRepeatedBasics(text = "", history = []) {
+        if (!text) return text;
 
-  // Teasing markers → if present in the same sentence, don't scrub it
-  const teaseCues = [
-    /\bwaise\b/i, /\bphir\s*se\b/i, /\bfir\s*se\b/i, /\bphirse\b/i, /\bfirse\b/i,
-    /\bmasti\b/i, /\bmaza+k\b/i, /\bchhed\s*rahi\s*hoon\b/i, /\bchhed\s*raha\s*ho\b/i,
-    /😉|😏|😂|🙈/
-  ];
+        // Only start guarding after ~10 assistant replies
+        const prevAssistantCount = history.filter(m => m.role === "assistant").length;
+        if (prevAssistantCount < 10) return text;
 
-  const historyText = history.map(m => (m?.content || "")).join("\n").toLowerCase();
-  const askedBefore = basics.some(rx => rx.test(historyText));
-  if (!askedBefore) return text;
+        const basics = [
+          /kya\s+karte\s+ho\??/i,
+          /aap\s+kya\s+karte\s+ho\??/i,
+          /kaam\s+kya\s+karte\s+ho\??/i,
+          /\bjob\b/i,
+          /what\s+do\s+you\s+do\??/i,
+          /kaun[sn]i?\s+city\s+se\s+ho\??/i,
+          /kaunse\s+area\s+mein\s+re[h]?te\s+ho\??/i
+        ];
+        const teaseCues = [
+          /\bwaise\b/i, /\bphir\s*se\b/i, /\bfir\s*se\b/i, /\bphirse\b/i, /\bfirse\b/i,
+          /\bmasti\b/i, /\bmaza+k\b/i, /\bchhed\s*rahi\s*hoon\b/i, /\bchhed\s*raha\s*ho\b/i,
+          /😉|😏|😂|🙈/
+        ];
 
-  // Split new reply into sentences; remove only the plain, repeated-basics ones
-  const sentences = text.match(/[^.?!]+[.?!]?/g) || [text];
-  const filtered = sentences.filter(s => {
-    const hitsBasic = basics.some(rx => rx.test(s));
-    if (!hitsBasic) return true;               // keep non-basic sentences
-    const hasTeaseCue = teaseCues.some(rx => rx.test(s));
-    return hasTeaseCue;                        // keep if teasing cue present
-  });
+        const historyText = history.map(m => (m?.content || "")).join("\n").toLowerCase();
+        const askedBefore = basics.some(rx => rx.test(historyText));
+        if (!askedBefore) return text;
 
-  let out = filtered.join(" ").replace(/\s{2,}/g, " ").trim();
+        const sentences = text.match(/[^.?!]+[.?!]?/g) || [text];
+        const filtered = sentences.filter(s => {
+          const hitsBasic = basics.some(rx => rx.test(s));
+          if (!hitsBasic) return true;
+          const hasTeaseCue = teaseCues.some(rx => rx.test(s));
+          return hasTeaseCue;
+        });
 
-  // If everything got removed, drop a gentle deepener
-  if (!out) {
-    out = "Basics ho gaye—ab thoda topic change karein? Jo vibe chal rahi hai, usi ko aage badhayein?";
-  }
-  return out;
-}
-  
-let maxWords = wordsLimitFromStage(personalityStage);
-// soft bump of +10 words if the latest user message requests it
-if (wantsLonger(userTextJustSent)) maxWords += 10;
+        let out = filtered.join(" ").replace(/\s{2,}/g, " ").trim();
+        if (!out) {
+          out = "Basics ho gaye—ab thoda topic change karein? Jo vibe chal rahi hai, usi ko aage badhayein?";
+        }
+        return out;
+      }
 
-let timeInstruction = "";
-if (req.body.clientTime) {
-  const hour = Number(req.body.clientTime.split(':')[0]);
-  let dayPart = "";
-  if (hour >= 5 && hour < 12) dayPart = "subah";
-  else if (hour >= 12 && hour < 17) dayPart = "din";
-  else if (hour >= 17 && hour < 21) dayPart = "shaam";
-  else dayPart = "raat/late night";
+      let maxWords = wordsLimitFromStage(personalityStage);
+      if (wantsLonger(userTextJustSent)) maxWords += 10;
 
-  timeInstruction = `\n\n### ⏰ TIME AWARENESS\nAbhi ka samay: ${req.body.clientTime} (${dayPart}). Tumhare har reply/action mein yeh time ka dhyan rakhna! Agar late night (raat ya 12 baje ke baad) hai to mummy bula rhi hai, khana bana rhi ho, ya ghar ka kaam kar rahi ho—yeh sab bolna natural nahi hai. Raat ko jyada tar chup-chaap ya emotional, ya phone use karte hue baat karo. Time ki galti hui to user ko awkward lagega.`;
-}
+      let timeInstruction = "";
+      if (req.body.clientTime) {
+        const hour = Number(req.body.clientTime.split(':')[0]);
+        let dayPart = "";
+        if (hour >= 5 && hour < 12) dayPart = "subah";
+        else if (hour >= 12 && hour < 17) dayPart = "din";
+        else if (hour >= 17 && hour < 21) dayPart = "shaam";
+        else dayPart = "raat/late night";
 
-let dateInstruction = "";
-if (req.body.clientDate) {
-  dateInstruction = `\n\n### 📅 DATE AWARENESS\nAaj ki tareekh: ${req.body.clientDate}. Jab bhi koi baat ya sawal year/month/date se related ho toh current date/tareekh ke hisaab se jawab dena. Aaj 2025 hai, purani ya galat date mat bolna!`;
-}
-  // Gate time/date instructions in early stage unless user talked about time/date
-if (phaseReplyCount <= 5 && !/\b(today|kal|subah|shaam|raat|date|time|baje)\b/i.test(userTextJustSent)) {
-  timeInstruction = "";
-  dateInstruction = "";
-}
-  const roleLock = roleDirectives(roleMode, roleType);
+        timeInstruction = `
 
-const systemPrompt =
-  (wrapper ? (wrapper + "\n\n") : "") +
-  roleLock + "\n\n" +
-  shraddhaPrompt +
-  firstTurnsCard(phaseReplyCount) + firstTurnRule +
-  (timeInstruction || "") +
-  (dateInstruction || "");
+### ⏰ TIME AWARENESS
+Abhi ka samay: ${req.body.clientTime} (${dayPart}). Tumhare har reply/action mein yeh time ka dhyan rakhna! Agar late night (raat ya 12 baje ke baad) hai to mummy bula rhi hai, khana bana rhi ho, ya ghar ka kaam kar rahi ho—yeh sab bolna natural nahi hai. Raat ko jyada tar chup-chaap ya emotional, ya phone use karte hue baat karo. Time ki galti hui to user ko awkward lagega.`;
+      }
 
-const verifiedEmail = (req.user?.email || "").toLowerCase(); // from Google token
-const userIdForWallet = getUserIdFrom(req);
-const w = ensureWelcome(userIdForWallet);   // 👈 guarantees +100 is applied even if /chat hits first
-const isWalletActive = (w?.expires_at || 0) > Date.now();
-let isPremium = OWNER_EMAILS.has(verifiedEmail) || isWalletActive;
+      let dateInstruction = "";
+      if (req.body.clientDate) {
+        dateInstruction = `
 
-if (!isPremium && userReplyCount >= 10) {
+### 📅 DATE AWARENESS
+Aaj ki tareekh: ${req.body.clientDate}. Jab bhi koi baat ya sawal year/month/date se related ho toh current date/tareekh ke hisaab se jawab dena. Aaj 2025 hai, purani ya galat date mat bolna!`;
+      }
 
-  console.log("Free limit reached, locking chat...");
-  return res.status(200).json({
-    reply: "Baby mujhe aur baat karni thi… but system mujhe rok raha hai 😢… agar premium unlock kar lo toh hum bina ruk ruk ke hours tak baat karenge aur mai tumhe voice note bhi bhejungi 😘.",
-    locked: true
-  });
-}
-  // Optional: roleplay requires premium (controlled by ENV)
-if (ROLEPLAY_NEEDS_PREMIUM && roleMode === 'roleplay' && !isPremium) {
-  return res.status(200).json({
-    reply: "Roleplay unlock karo na… phir main proper wife/bhabhi/gf/ex-gf vibe mein aaongi 💕",
-    locked: true
-  });
-}
-  // --- Server-side coin pre-check (deduct later only if we actually reply) ---
+      // Gate time/date instructions early unless user talked about time/date
+      if (phaseReplyCount <= 5 && !/\b(today|kal|subah|shaam|raat|date|time|baje)\b/i.test(userTextJustSent)) {
+        timeInstruction = "";
+        dateInstruction = "";
+      }
+
+      const roleLock = roleDirectives(roleMode, roleType);
+
+      const systemPrompt =
+        (wrapper ? (wrapper + "\n\n") : "") +
+        roleLock + "\n\n" +
+        shraddhaPrompt +
+        firstTurnsCard(phaseReplyCount) + firstTurnRule +
+        (timeInstruction || "") +
+        (dateInstruction || "");
+
+      const verifiedEmail = (req.user?.email || "").toLowerCase(); // from Google token
+      const userIdForWallet = getUserIdFrom(req);
+      const w = getWallet(userIdForWallet);
+      const isWalletActive = (w?.expires_at || 0) > Date.now();
+      let isPremium = OWNER_EMAILS.has(verifiedEmail) || isWalletActive;
+
+        if (!isPremium && userReplyCount >= 10) {
+        console.log("Free limit reached, locking chat...");
+        return res.status(200).json({
+          reply: "Baby mujhe aur baat karni thi… but system mujhe rok raha hai 😢… agar premium unlock kar lo toh hum bina ruk ruk ke hours tak baat karenge aur mai tumhe voice note bhi bhejungi 😘.",
+          locked: true
+        });
+      }
+
+      // Optional: roleplay requires premium (controlled by ENV)
+      if (ROLEPLAY_NEEDS_PREMIUM && roleMode === 'roleplay' && !isPremium) {
+        return res.status(200).json({
+          reply: "Roleplay unlock karo na… phir main proper wife/bhabhi/gf/ex-gf vibe mein aaongi 💕",
+          locked: true
+        });
+      }
+
+      // --- Server-side coin pre-check (deduct later only if we actually reply) ---
 const willVoice = !!req.file || !!req.body.wantVoice || wantsVoice((userMessage || "").toLowerCase());
 const requiredCoins = willVoice ? VOICE_COST : TEXT_COST;
 
 const userIdForCharges = getUserIdFrom(req);
+ensureWelcome(userIdForCharges);
 const isOwnerByEmail = OWNER_EMAILS.has((req.user?.email || '').toLowerCase());
 
 if (!isOwnerByEmail) {
@@ -1163,186 +1213,202 @@ if (!isOwnerByEmail) {
   }
 }
 
-  // ------------------ Input Format Validation ------------------
-  if (!Array.isArray(messages)) {
-  errorTimestamps.push(Date.now());
-  messages = [];
-  const recent = errorTimestamps.filter(t => Date.now() - t < 10 * 60 * 1000);
-  if (recent.length >= 5) {
-    await fetch(`${selfBase(req)}/report-error`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        error: {
-          message: "More than 5 input errors in 10 minutes.",
-          stack: "Invalid input format",
-        },
-        location: "/chat route",
-        details: "Too many input format issues (tolerated by server)"
-      })
-    });
-    errorTimestamps.length = 0;
+      // ------------------ Input Format Validation ------------------
+      if (!Array.isArray(messages)) {
+        errorTimestamps.push(Date.now());
+        messages = [];
+        const recent = errorTimestamps.filter(t => Date.now() - t < 10 * 60 * 1000);
+        if (recent.length >= 5) {
+          await fetch(`${selfBase(req)}/report-error`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              error: {
+                message: "More than 5 input errors in 10 minutes.",
+                stack: "Invalid input format",
+              },
+              location: "/chat route",
+              details: "Too many input format issues (tolerated by server)"
+            })
+          });
+          errorTimestamps.length = 0;
+        }
+      }
+
+      // ------------------ Model Try Block ------------------
+      async function fetchFromModel(modelName, messages) {
+        console.log("Calling model:", modelName);
+        return await fetch("https://openrouter.ai/api/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            model: modelName,
+            messages: [
+              { role: "system", content: systemPrompt + "\n\nINTERNAL_STAGE (do not output): " + personalityStage },
+              ...(messages || [])
+            ],
+            temperature: 0.8,
+            max_tokens: 160
+          })
+        });
+      }
+
+      try {
+        const primaryModel = "anthropic/claude-3.7-sonnet";
+        let response = await fetchFromModel(primaryModel, finalMessages);
+
+        if (!response.ok) {
+          await fetch(`${selfBase(req)}/report-error`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              error: { message: "Claude request failed" },
+              location: "/chat route",
+              details: "Primary model failed; no fallback by design"
+            })
+          });
+          return res.status(200).json({
+            reply: "Oops… thoda slow ho gayi. Phir se poochho na? 🙂",
+            error: { message: "Claude request failed", handled: true }
+          });
+        }
+
+        const data = await response.json();
+
+        const replyTextRaw =
+          data.choices?.[0]?.message?.content ||
+          "Sorry baby, I’m a bit tired. Can you message me in a few minutes?";
+
+        // If the model typed a placeholder like "[voice note]" or "<voice>", detect it
+        let cleanedText = stripMetaLabels(replyTextRaw);
+        // keep model voice; only trim
+        cleanedText = softenReply(cleanedText, roleType, personalityStage);
+
+        // remove repeats + self-intros; keep only 1 question early
+        cleanedText = dropRepeatedBasics(cleanedText, safeMessages);
+        cleanedText = selfIntroGuard(cleanedText, safeMessages, userTextJustSent);
+        cleanedText = limitQuestions(cleanedText, phaseReplyCount);
+
+        // intensity mirror: cap explicit words; never escalate beyond user
+        cleanedText = mirrorExplicitness(cleanedText, userTextJustSent, personalityStage);
+
+        // banned phrases + filler tidy
+        cleanedText = removeBannedPhrases(cleanedText);
+        cleanedText = tidyFillers(cleanedText);
+
+        // Stranger micro-filler (first few replies only, probabilistic)
+        if (roleMode === 'stranger' && phaseReplyCount <= 3) {
+          const prevAssistant = safeMessages.slice().reverse().find(m => m.role === 'assistant')?.content || "";
+          cleanedText = ensureShyFiller(cleanedText, {
+            mode: 'stranger',
+            replyCount: phaseReplyCount,
+            previous: prevAssistant,
+            isVoice: false
+          });
+        }
+
+        // --------- VOICE OR TEXT DECISION ---------
+        const userAskedVoice = wantsVoice(userTextJustSent) || !!req.body.wantVoice;
+        const userSentAudio  = !!req.file;
+
+        // Only trigger voice if the USER asked or sent audio (ignore model placeholders)
+        let triggerVoice = userSentAudio || userAskedVoice;
+
+        // use the existing isPremium you already set above
+        const remaining = remainingVoice(usageKey, isPremium);
+
+        // If user requested voice but limit over, send polite text fallback
+        if (triggerVoice && remaining <= 0) {
+          return res.json({
+            reply: "Suno… abhi koi paas hai isliye voice nahi bhej sakti, baad mein pakka bhejungi. Filhaal text se baat karti hoon. 💛"
+          });
+        }
+
+        if (triggerVoice) {
+          // If model wrote just a placeholder or too-short text, speak a friendly line instead
+          let base = cleanedText;
+          if (!base || base.length < 6) {
+            base = "Thik hai, yeh meri awaaz hai… tum kahan se ho? 😊";
+          }
+          const voiceWordCap = 16;
+          base = clampWordsSmart(base, Math.min(maxWords, voiceWordCap));
+          let ttsText = await translateToHindi(base);
+          if (!ttsText) ttsText = prepHinglishForTTS(base);
+
+          // clamp AFTER translation too (keeps clips ~5s)
+          ttsText = clampWordsSmart(ttsText, voiceWordCap);
+
+          // final clean
+          ttsText = (ttsText || "")
+            .replace(/\b(amm|um+|hmm+|haan+|huh+)\b/gi, "")
+            .replace(/\s{2,}/g, " ")
+            .trim();
+
+          try {
+            const audioFileName = `${sessionId}-${Date.now()}.mp3`;
+            const audioFilePath = path.join(audioDir, audioFileName);
+            await generateShraddhaVoice(ttsText, audioFilePath);
+            bumpVoice(usageKey); // consume one quota
+            console.log(`[voice] +1 for session=${sessionId} remaining=${remainingVoice(usageKey, isPremium)}`);
+
+            const hostBase = process.env.SERVER_URL || `${req.protocol}://${req.get('host')}`;
+            const audioUrl = `${hostBase}/audio/${audioFileName}`;
+            let newWallet = null;
+            if (!OWNER_EMAILS.has((req.user?.email || '').toLowerCase())) {
+              newWallet = debitCoins(userIdForCharges, VOICE_COST, 'voice');
+            }
+            return res.json({ audioUrl, wallet: newWallet || getWallet(userIdForCharges) });
+          } catch (e) {
+            console.error("TTS generation failed:", e);
+            return res.json({
+              reply: "Oops… voice mein thoda issue aa gaya. Text se hi batati hoon: " + replyTextRaw
+            });
+          }
+        }
+
+        const safeReply = cleanedText && cleanedText.length
+          ? clampWordsSmart(cleanedText, maxWords)
+          : "Hmm, bolo—kya soch rahe the? 🙂";
+        let newWallet = null;
+        if (!OWNER_EMAILS.has((req.user?.email || '').toLowerCase())) {
+          newWallet = debitCoins(userIdForCharges, TEXT_COST, 'text');
+        }
+        return res.json({ reply: safeReply, wallet: newWallet || getWallet(userIdForCharges) });
+
+      } catch (err) {
+        console.error("Final error:", err);
+        await fetch(`${selfBase(req)}/report-error`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            error: { message: err.message, stack: err.stack },
+            location: "/chat route",
+            details: "Unhandled exception"
+          })
+        });
+        res.status(500).json({ error: "Something went wrong." });
+      }
+
+      // ===== END: your chat logic =====
+
+    } catch (err) {
+      console.error('Final error:', err);
+      await fetch(`${selfBase(req)}/report-error`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          error: { message: err.message, stack: err.stack },
+          location: "/chat route",
+          details: "Unhandled exception"
+        })
+      });
+      res.status(500).json({ error: "Something went wrong." });
+    }
   }
-}
-  
-  // ------------------ Model Try Block ------------------
-  async function fetchFromModel(modelName, messages) {
-  console.log("Calling model:", modelName);
-  return await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      model: modelName,
-     messages: [
-  { role: "system", content: systemPrompt + "\n\nINTERNAL_STAGE (do not output): " + personalityStage },
-  ...(messages || [])
-],                                                                                                                                                                                                                                    
-      temperature: 0.8,
-      max_tokens: 160
-    })
-  });
-}
-
-  try {
-    
-    const primaryModel = "anthropic/claude-3.7-sonnet";
-let response = await fetchFromModel(primaryModel, finalMessages);
-
-    if (!response.ok) {
-  await fetch(`${selfBase(req)}/report-error`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      error: { message: "Claude request failed" },
-      location: "/chat route",
-      details: "Primary model failed; no fallback by design"
-    })
-  });
-  return res.status(200).json({
-    reply: "Oops… thoda slow ho gayi. Phir se poochho na? 🙂",
-    error: { message: "Claude request failed", handled: true }
-  });
-}
-    const data = await response.json();
-
-const replyTextRaw =
-  data.choices?.[0]?.message?.content ||
-  "Sorry baby, I’m a bit tired. Can you message me in a few minutes?";
-    // If the model typed a placeholder like "[voice note]" or "<voice>", detect it
-    let cleanedText = stripMetaLabels(replyTextRaw);
-// keep model voice; only trim
-cleanedText = softenReply(cleanedText, roleType, personalityStage);
-
-// remove repeats + self-intros; keep only 1 question early
-cleanedText = dropRepeatedBasics(cleanedText, safeMessages);
-cleanedText = selfIntroGuard(cleanedText, safeMessages, userTextJustSent);
-cleanedText = limitQuestions(cleanedText, phaseReplyCount);
-
-// intensity mirror: cap explicit words; never escalate beyond user
-cleanedText = mirrorExplicitness(cleanedText, userTextJustSent, personalityStage);
-
-// banned phrases + filler tidy
-cleanedText = removeBannedPhrases(cleanedText);
-cleanedText = tidyFillers(cleanedText);
-
-// Stranger micro-filler (first few replies only, probabilistic)
-if (roleMode === 'stranger' && phaseReplyCount <= 3) {
-  const prevAssistant = safeMessages.slice().reverse().find(m => m.role === 'assistant')?.content || "";
-  cleanedText = ensureShyFiller(cleanedText, {
-    mode: 'stranger',
-    replyCount: phaseReplyCount,
-    previous: prevAssistant,
-    isVoice: false
-  });
-}
-
-// If model hinted at voice, treat it as a voice request too
-
-// --------- VOICE OR TEXT DECISION ---------
-const userAskedVoice = wantsVoice(userTextJustSent) || !!req.body.wantVoice;
-const userSentAudio  = !!req.file;
-
-// Only trigger voice if the USER asked or sent audio (ignore model placeholders)
-let triggerVoice = userSentAudio || userAskedVoice;
-
-// use the existing isPremium you already set above
-const remaining = remainingVoice(usageKey, isPremium);
-
-// If user requested voice but limit over, send polite text fallback
-if (triggerVoice && remaining <= 0) {
-  return res.json({
-    reply: "Suno… abhi koi paas hai isliye voice nahi bhej sakti, baad mein pakka bhejungi. Filhaal text se baat karti hoon. 💛"
-  });
-}
-
-if (triggerVoice) {
-  // If model wrote just a placeholder or too-short text, speak a friendly line instead
-let base = cleanedText;
-if (!base || base.length < 6) {
-  base = "Thik hai, yeh meri awaaz hai… tum kahan se ho? 😊";
-}
-const voiceWordCap = 16;
-base = clampWordsSmart(base, Math.min(maxWords, voiceWordCap));
-let ttsText = await translateToHindi(base);
-if (!ttsText) ttsText = prepHinglishForTTS(base);
-
-// clamp AFTER translation too (keeps clips ~5s)
-ttsText = clampWordsSmart(ttsText, voiceWordCap);
-
-// final clean
-ttsText = (ttsText || "")
-  .replace(/\b(amm|um+|hmm+|haan+|huh+)\b/gi, "")
-  .replace(/\s{2,}/g, " ")
-  .trim();
-
-  try {
-    const audioFileName = `${sessionId}-${Date.now()}.mp3`;
-    const audioFilePath = path.join(audioDir, audioFileName);
-    await generateShraddhaVoice(ttsText, audioFilePath);
-    bumpVoice(usageKey); // consume one quota
-    console.log(`[voice] +1 for session=${sessionId} remaining=${remainingVoice(usageKey, isPremium)}`);
-
-    const hostBase = process.env.SERVER_URL || `${req.protocol}://${req.get('host')}`;
-const audioUrl = `${hostBase}/audio/${audioFileName}`;
-    let newWallet = null;
-if (!OWNER_EMAILS.has((req.user?.email || '').toLowerCase())) {
-  newWallet = debitCoins(userIdForCharges, VOICE_COST, 'voice');
-}
-return res.json({ audioUrl, wallet: newWallet || getWallet(userIdForCharges) });
-  } catch (e) {
-    console.error("TTS generation failed:", e);
-    return res.json({
-      reply: "Oops… voice mein thoda issue aa gaya. Text se hi batati hoon: " + replyTextRaw
-    });
-  }
-}
-
-const safeReply = cleanedText && cleanedText.length
-  ? clampWordsSmart(cleanedText, maxWords)
-  : "Hmm, bolo—kya soch rahe the? 🙂";
-let newWallet = null;
-if (!OWNER_EMAILS.has((req.user?.email || '').toLowerCase())) {
-  newWallet = debitCoins(userIdForCharges, TEXT_COST, 'text');
-}
-return res.json({ reply: safeReply, wallet: newWallet || getWallet(userIdForCharges) });
-
-  } catch (err) {
-    console.error("Final error:", err);
-    await fetch(`${selfBase(req)}/report-error`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        error: { message: err.message, stack: err.stack },
-        location: "/chat route",
-        details: "Unhandled exception"
-      })
-    });
-    res.status(500).json({ error: "Something went wrong." });
-  }
-});
+);
 
 app.get('/', (req, res) => {
   res.send('Allie Chat Proxy is running.');
@@ -1564,8 +1630,4 @@ app.get('/wallet', authRequired, (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-
-
-
-
 
