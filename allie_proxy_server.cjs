@@ -14,6 +14,29 @@ const SESSION_SECRET = process.env.SESSION_SECRET || 'change-me-in-env';
 const SESSION_COOKIE = 'bb_sess';
 const SESSION_TTL_MS = 14 * 24 * 60 * 60 * 1000;           // 14 days
 const SESSION_ROLLING_THRESHOLD_MS = 3 * 24 * 60 * 60 * 1000; // renew when <3d left
+// --- CSRF (double-submit) ---
+const CSRF_COOKIE = 'bb_csrf';
+function mintCsrf() { return crypto.randomBytes(32).toString('hex'); }
+function setCsrfCookie(res, token) {
+  // readable cookie is fine for double-submit (it must match header)
+  res.cookie(CSRF_COOKIE, token, {
+    httpOnly: false,   // must be readable by JS to send in header
+    secure: true,
+    sameSite: 'none',
+    path: '/',
+    maxAge: SESSION_TTL_MS,
+  });
+}
+function verifyCsrf(req, res, next) {
+  // Only protect state-changing verbs
+  if (!['POST','PUT','PATCH','DELETE'].includes(req.method)) return next();
+  const hdr  = req.get('x-csrf-token');
+  const cook = req.cookies?.[CSRF_COOKIE];
+  if (!hdr || !cook || hdr !== cook) {
+    return res.status(403).json({ ok:false, error:'bad_csrf' });
+  }
+  return next();
+}
 
 function mintSession(payload) {
   const now = Math.floor(Date.now() / 1000);
@@ -37,10 +60,12 @@ function setSessionCookie(res, token) {
   res.cookie(SESSION_COOKIE, token, {
     httpOnly: true,
     secure: true,          // required for SameSite=None
-    sameSite: 'none',      // cross-site (frontend and API are different domains)
+    sameSite: 'none',      // cross-site
     path: '/',
     maxAge: SESSION_TTL_MS
   });
+  // (Re)mint a CSRF token alongside the session
+  setCsrfCookie(res, mintCsrf());
 }
 
 async function verifyGoogleToken(idToken) {
@@ -140,14 +165,9 @@ function writeJSON(p,obj){ fs.writeFileSync(p, JSON.stringify(obj,null,2)); }
 const walletDB = readJSON(walletFile);
 
 function getUserIdFrom(req) {
-  // Prefer verified Google identity set by auth middleware
-  if (req.user?.sub)   return req.user.sub;
-  if (req.user?.email) return req.user.email;
-
-  // Fallbacks (shouldn't be used for auth decisions)
-  const email = String(req.body?.userEmail || req.query?.email || req.get('x-user-email') || '').toLowerCase();
-  const sub   = String(req.body?.userSub   || req.query?.sub   || '').trim();
-  return sub || email || 'anon';
+  // Identity comes ONLY from the verified session that authRequired sets.
+  // (Never from body/query/headers.)
+  return (req.user?.sub || req.user?.email || 'anon').toLowerCase();
 }
 
 function getWallet(userId){
@@ -786,7 +806,7 @@ app.post('/report-error', async (req, res) => {
   }
 });
 
-app.post('/chat', authRequired, rateLimitChat, upload.single('audio'), async (req, res) => {
+app.post('/chat', authRequired, verifyCsrf, rateLimitChat, upload.single('audio'), async (req, res) => {
   let userMessage = null;
   let audioPath = null;
 
@@ -1370,7 +1390,7 @@ return res.json({ ok:true, mode: RAZORPAY_KEY_ID.startsWith('rzp_test_') ? 'test
   }
 });
 // Create a Payment Link for a pack (Daily/Weekly)
-app.post('/buy/:pack', async (req, res) => {
+app.post('/buy/:pack', authRequired, verifyCsrf, async (req, res) => {
   const pack = String(req.params.pack || '').toLowerCase();
   const def = PACKS[pack];
   if (!def) return res.status(400).json({ ok:false, error:'bad_pack' });
@@ -1431,7 +1451,7 @@ app.post('/buy/:pack', async (req, res) => {
 }
 });
 // ======== DIRECT CHECKOUT (Orders API) ========
-app.post('/order/:pack', async (req, res) => {
+app.post('/order/:pack', authRequired, verifyCsrf, async (req, res) => {
   const pack = String(req.params.pack || '').toLowerCase();
   const def  = PACKS[pack];
   if (!def) return res.status(400).json({ ok:false, error:'bad_pack' });
@@ -1471,7 +1491,7 @@ app.post('/order/:pack', async (req, res) => {
     return res.status(500).json({ ok:false, error:'order_failed', details });
   }
 });
-app.post('/verify-order', async (req, res) => {
+app.post('/verify-order', authRequired, verifyCsrf, async (req, res) => {
   try {
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body || {};
     if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
@@ -1507,7 +1527,7 @@ const { wallet, lastCredit } = creditPack(safeUserId, pack, razorpay_payment_id,
 });
 // ======== END DIRECT CHECKOUT ========
 // Verify the Payment Link callback and credit coins
-app.post('/verify-payment-link', async (req, res) => {
+app.post('/verify-payment-link', authRequired, verifyCsrf, async (req, res) => {
   try {
     const { link_id, payment_id, reference_id, status } = req.body || {};
     if (!link_id || !payment_id || !reference_id || !status) {
@@ -1544,6 +1564,7 @@ app.get('/wallet', authRequired, (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
