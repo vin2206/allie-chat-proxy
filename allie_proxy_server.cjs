@@ -272,17 +272,19 @@ async function transcribeWithWhisper(audioPath) {
   // form.append('translate', 'true');
 
   try {
-    const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
-      method: 'POST',
-      headers: {
-        ...form.getHeaders(),
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-      },
-      body: form,
-    });
-    if (!response.ok) throw new Error('Whisper API failed: ' + response.statusText);
-    const data = await response.json();
-    return data.text;
+    const response = await axios.post(
+  'https://api.openai.com/v1/audio/transcriptions',
+  form,
+  {
+    headers: {
+      ...form.getHeaders(),
+      'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+    },
+    maxBodyLength: Infinity,   // keeps large multipart safe
+  }
+);
+if (!response || !response.data) throw new Error('Whisper API failed');
+return response.data.text;
   } catch (err) {
     console.error('Whisper error:', err);
     return null;
@@ -1630,4 +1632,5 @@ app.get('/wallet', authRequired, (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
