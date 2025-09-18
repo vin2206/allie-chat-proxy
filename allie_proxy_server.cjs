@@ -1684,14 +1684,37 @@ const { wallet, lastCredit } = creditPack(safeUserId, pack, payment_id, link_id)
 });
 
 // Wallet
+// Read-only wallet endpoint (no auto-bonus)
 app.get('/wallet', authRequired, (req, res) => {
   const userId = getUserIdFrom(req);
-  const w = ensureWelcome(userId);   // one-time +100, then no-op
+  const w = getWallet(userId);
   res.json({ ok: true, wallet: w });
+});
+// One-time welcome claim (100 coins) – controlled by server
+app.post('/claim-welcome', authRequired, verifyCsrf, (req, res) => {
+  try {
+    const userId = getUserIdFrom(req);
+    // If user already exists in DB and already claimed, just return their wallet
+    const existed = Object.prototype.hasOwnProperty.call(walletDB, userId);
+    const w = getWallet(userId);
+    if (w.welcome_claimed === true) {
+      return res.json({ ok: true, wallet: w, claimed: false });
+    }
+
+    // Only grant if this user has NO prior wallet entry (i.e., truly new in current DB)
+    if (!existed) {
+      const out = ensureWelcome(userId); // sets welcome_claimed + credits + txns
+      return res.json({ ok: true, wallet: out, claimed: true });
+    }
+
+    // Old user with no welcome flag (e.g., legacy wallet) → do NOT grant automatically
+    return res.json({ ok: false, error: 'already_user' });
+  } catch (e) {
+    console.error('claim-welcome failed:', e);
+    return res.status(500).json({ ok: false, error: 'server_error' });
+  }
 });
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-
-
 
