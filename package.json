@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Proxy server for Allie chatbot",
   "type": "commonjs",
-  "engines": { "node": "20.11.1" },
+  "engines": { "node": "22.15.0" }
   "scripts": {
     "start": "node allie_proxy_server.cjs"
   },
@@ -19,4 +19,5 @@
     "jsonwebtoken": "^9.0.2"
   }
 }
+
 
