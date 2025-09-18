@@ -121,6 +121,8 @@ const multer = require('multer');
 const FormData = require('form-data');
 const crypto = require('crypto'); // add
 // Razorpay + URLs  (keep names consistent everywhere)
+// Pre-created order/link time-to-live (keep short so stale objects can't be reused)
+const ORDER_TTL_SEC = 15 * 60; // 15 minutes
 const RAZORPAY_KEY_ID          = (process.env.RAZORPAY_KEY_ID || '').trim();
 const RAZORPAY_KEY_SECRET      = (process.env.RAZORPAY_KEY_SECRET || '').trim();
 const RAZORPAY_WEBHOOK_SECRET  = (process.env.RAZORPAY_WEBHOOK_SECRET || '').trim();
@@ -743,6 +745,12 @@ app.post('/webhook/razorpay', express.raw({ type: 'application/json' }), async (
 
     if (event?.event === 'payment_link.paid') {
       const link = event?.payload?.payment_link?.entity;
+      // ⏱️ TTL guard for paid links (ignore very old links)
+const nowSec = Math.floor(Date.now() / 1000);
+const createdAtSec = link?.created_at || 0;
+if (!createdAtSec || (nowSec - createdAtSec > ORDER_TTL_SEC)) {
+  return res.json({ ok: true }); // acknowledge; no credit for stale link
+}
       const ref  = link?.reference_id || '';
       const { pack, userId } = parseRef(ref);
       const safeUserId = userId || 'anon';
@@ -759,6 +767,12 @@ app.post('/webhook/razorpay', express.raw({ type: 'application/json' }), async (
             { auth: { username: RAZORPAY_KEY_ID, password: RAZORPAY_KEY_SECRET } }
           );
           const ref = or?.data?.notes?.ref || or?.data?.receipt || '';
+          // ⏱️ TTL guard for orders (ignore very old orders)
+const nowSec = Math.floor(Date.now() / 1000);
+const createdAtSec = or?.data?.created_at || 0;
+if (!createdAtSec || (nowSec - createdAtSec > ORDER_TTL_SEC)) {
+  return res.json({ ok: true }); // acknowledge; no credit for stale order
+}
           const { pack, userId } = parseRef(ref);
           const safeUserId = userId || 'anon';
           if (pack && safeUserId) creditPack(safeUserId, pack, pay?.id || '', orderId);
@@ -1474,18 +1488,20 @@ app.post('/buy/:pack', authRequired, verifyCsrf, async (req, res) => {
 
   try {
     const payload = {
-      amount: def.amount * 100,  // paise
-      currency: 'INR',
-      accept_partial: false,
-      description: `Shraddha ${pack} pack for ${userEmail || userId}`,
-      customer: userEmail ? { email: userEmail } : undefined,
-      notify: { sms: false, email: RZP_NOTIFY_EMAIL && !!userEmail },
-      reference_id: makeRef(userId, pack),
-      callback_url: returnUrl,
-      callback_method: 'get',
-      reminder_enable: false,
-      notes: { pack, userId }
-    };
+  amount: def.amount * 100,  // paise
+  currency: 'INR',
+  accept_partial: false,
+  description: `Shraddha ${pack} pack for ${userEmail || userId}`,
+  customer: userEmail ? { email: userEmail } : undefined,
+  notify: { sms: false, email: RZP_NOTIFY_EMAIL && !!userEmail },
+  reference_id: makeRef(userId, pack),
+  callback_url: returnUrl,
+  callback_method: 'get',
+  reminder_enable: false,
+  notes: { pack, userId },
+  // ⏱️ auto-expire stale links so they can't be reused later
+  expire_by: Math.floor(Date.now() / 1000) + ORDER_TTL_SEC
+};
 
     const r = await axios.post(
       'https://api.razorpay.com/v1/payment_links',
@@ -1506,9 +1522,38 @@ app.post('/buy/:pack', authRequired, verifyCsrf, async (req, res) => {
         { auth: { username: RAZORPAY_KEY_ID, password: RAZORPAY_KEY_SECRET } }
       );
       const existing = list?.data?.items?.[0];
-      if (existing) {
-        return res.json({ ok:true, link_id: existing.id, short_url: existing.short_url });
-      }
+if (existing) {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const isFresh = (existing.status === 'created') &&
+                  (nowSec - (existing.created_at || nowSec) < ORDER_TTL_SEC);
+  if (isFresh) {
+    return res.json({ ok:true, link_id: existing.id, short_url: existing.short_url });
+  }
+  // Stale or already used → create a brand-new link (same response shape as normal path)
+  try {
+    const fresh = await axios.post(
+      'https://api.razorpay.com/v1/payment_links',
+      {
+        amount: def.amount * 100,
+        currency: 'INR',
+        accept_partial: false,
+        description: `Shraddha ${pack} pack for ${userEmail || userId}`,
+        customer: userEmail ? { email: userEmail } : undefined,
+        notify: { sms: false, email: RZP_NOTIFY_EMAIL && !!userEmail },
+        reference_id: makeRef(userId, pack),
+        callback_url: returnUrl,
+        callback_method: 'get',
+        reminder_enable: false,
+        notes: { pack, userId },
+        expire_by: Math.floor(Date.now() / 1000) + ORDER_TTL_SEC
+      },
+      { auth: { username: RAZORPAY_KEY_ID, password: RAZORPAY_KEY_SECRET } }
+    );
+    return res.json({ ok:true, link_id: fresh.data.id, short_url: fresh.data.short_url });
+  } catch (e3) {
+    console.error('recreate fresh payment_link failed:', e3?.response?.data || e3.message);
+  }
+}
     } catch (e2) {
       console.error('failed to fetch existing payment_link:', e2?.response?.data || e2.message);
     }
@@ -1582,6 +1627,12 @@ app.post('/verify-order', authRequired, verifyCsrf, async (req, res) => {
       { auth: { username: RAZORPAY_KEY_ID, password: RAZORPAY_KEY_SECRET } }
     );
     const ref = or?.data?.notes?.ref || or?.data?.receipt || '';
+    // ⏱️ TTL guard: ignore orders created too long ago
+const createdAtSec = or?.data?.created_at || 0;
+const nowSec = Math.floor(Date.now() / 1000);
+if (!createdAtSec || (nowSec - createdAtSec > ORDER_TTL_SEC)) {
+  return res.status(400).json({ ok:false, error:'order_expired' });
+}
 const { pack, userId } = parseRef(ref);
 const safeUserId = userId || 'anon';
 if (!pack) return res.status(400).json({ ok:false, error:'bad_ref' });
@@ -1611,9 +1662,18 @@ app.post('/verify-payment-link', authRequired, verifyCsrf, async (req, res) => {
       return res.status(400).json({ ok:false, error:'not_paid' });
     }
 
-   const { pack, userId } = parseRef(reference_id);
+   // Always trust Razorpay’s reference_id, not the client body
+const rRef = r?.data?.reference_id || r?.data?.notes?.ref || '';
+const { pack, userId } = parseRef(rRef);
 const safeUserId = userId || 'anon';
 if (!pack) return res.status(400).json({ ok:false, error:'bad_ref' });
+
+// ⏱️ TTL guard for links too
+const createdAtSec = r?.data?.created_at || 0;
+const nowSec = Math.floor(Date.now() / 1000);
+if (!createdAtSec || (nowSec - createdAtSec > ORDER_TTL_SEC)) {
+  return res.status(400).json({ ok:false, error:'link_expired' });
+}
 
 const { wallet, lastCredit } = creditPack(safeUserId, pack, payment_id, link_id);
     return res.json({ ok:true, wallet, lastCredit });
@@ -1632,5 +1692,6 @@ app.get('/wallet', authRequired, (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
