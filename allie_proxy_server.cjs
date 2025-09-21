@@ -689,33 +689,41 @@ function selfBase(req) {
   return process.env.SERVER_URL || `${req.protocol}://${req.get('host')}`;
 }
 // CORS allowlist
-const ALLOWED_ORIGINS = new Set([
-  'https://chat.buddyby.com',                                     // your new domain
-  'https://allie-chat-app.vercel.app',                            // project alias (if you’ll use it)
-  'https://allie-chat-app-vinay-sajwans-projects.vercel.app',     // project alias shown in Vercel
-  'https://allie-chat-app-git-main-vinay-sajwans-projects.vercel.app' // preview you’ve been using
-  // add 'http://localhost:5173' etc. if you need local dev later
-]);
+// ↑ REPLACE your old allowlist + cors() calls with everything in this block
 
-app.use(cors({
+// Always vary by Origin so CDNs/proxies don't mix responses
+app.use((req, res, next) => {
+  res.setHeader('Vary', 'Origin');
+  next();
+});
+
+// Domains you permit to read responses (comma-separated in Railway env)
+const ORIGINS = (process.env.ALLOWED_ORIGINS || [
+  'https://chat.buddyby.com',
+  // add your local dev origin(s) only when needed, e.g.:
+  // 'http://localhost:5173'
+].join(','))
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
+
+const ALLOWED_ORIGINS = new Set(ORIGINS);
+
+// One canonical CORS handler (covers normal + preflight)
+const corsConfig = {
   origin(origin, cb) {
+    // allow same-origin or non-browser clients (no Origin header)
     if (!origin) return cb(null, true);
-    cb(null, ALLOWED_ORIGINS.has(origin));
+    return cb(null, ALLOWED_ORIGINS.has(origin));
   },
-  methods: ['GET','POST'],
-  credentials: true,      // <— allow cookies
-}));
-app.options(
-  '*',
-  cors({
-    origin(origin, cb) {
-      if (!origin) return cb(null, true);
-      cb(null, ALLOWED_ORIGINS.has(origin));
-    },
-    methods: ['GET', 'POST'],
-    credentials: true,
-  })
-);
+  methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
+  credentials: true, // send/accept cookies
+  allowedHeaders: ['Content-Type', 'X-CSRF-Token', 'Authorization'],
+  optionsSuccessStatus: 204
+};
+
+app.use(cors(corsConfig));
+app.options('*', cors(corsConfig));
 app.use(cookieParser());  // <— read cookies
 // --- very light IP rate-limit for /chat (40 req / minute) ---
 const ipHits = new Map();
@@ -1717,4 +1725,5 @@ app.post('/claim-welcome', authRequired, verifyCsrf, (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
