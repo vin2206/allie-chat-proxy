@@ -685,6 +685,7 @@ Notes:
 - newer deny to dirty talk, continue with user story.`;
   
 const app = express();
+app.set('trust proxy', true); // so req.ip is the real client IP behind Railway/LB
 function selfBase(req) {
   return process.env.SERVER_URL || `${req.protocol}://${req.get('host')}`;
 }
@@ -734,6 +735,38 @@ function rateLimitChat(req, res, next) {
   list.push(now);
   ipHits.set(ip, list);
   if (list.length > 40) return res.status(429).json({ reply: "Too many requests. Slow down a little 😊" });
+  next();
+}
+// generic small limiter (N hits / minute) keyed by user or IP
+function makeTinyLimiter(N = 10) {
+  const store = new Map();
+  return function tinyLimit(req, res, next) {
+    const key = (req.user?.sub || req.user?.email || req.ip || 'x').toLowerCase();
+    const now = Date.now(), win = 60 * 1000;
+    const list = (store.get(key) || []).filter(t => now - t < win);
+    list.push(now);
+    store.set(key, list);
+    if (list.length > N) return res.status(429).json({ ok:false, error:'slow_down' });
+    next();
+  };
+}
+const limitBuy    = makeTinyLimiter(6);  // 6/min
+const limitOrder  = makeTinyLimiter(10); // 10/min
+const limitVerify = makeTinyLimiter(20); // 20/min
+const limitHealth = makeTinyLimiter(6);  // 6/min
+const limitReport = makeTinyLimiter(4);  // 4/min
+// --- very light PER-USER rate-limit for /chat (20 req / minute) ---
+const userHits = new Map();
+function rateLimitUserChat(req, res, next) {
+  // Resolve stable user key (falls back to IP if totally anonymous)
+  const key = (req.user?.sub || req.user?.email || req.ip || 'x').toLowerCase();
+  const now = Date.now(), win = 60 * 1000;
+  const list = (userHits.get(key) || []).filter(t => now - t < win);
+  list.push(now);
+  userHits.set(key, list);
+  if (list.length > 20) {
+    return res.status(429).json({ reply: "Thoda dheere—main yahin hoon. 😊" });
+  }
   next();
 }
 // ---- Razorpay Webhook (must be ABOVE app.use(express.json())) ----
@@ -805,7 +838,7 @@ const fromEmail = process.env.FROM_EMAIL;
 const toEmail = process.env.SEND_TO_EMAIL;
 const errorTimestamps = []; // Track repeated input format issues
 
-app.post('/report-error', async (req, res) => {
+app.post('/report-error', authRequired, limitReport, async (req, res) => {
   try {
     // 🔒 Guard: don’t attempt Resend if env is missing
     if (!resendAPIKey || !fromEmail || !toEmail) {
@@ -860,8 +893,9 @@ app.post('/report-error', async (req, res) => {
  // FIXED /chat: handler wraps ALL your chat logic + rate-limit added
 app.post(
   '/chat',
-  rateLimitChat,
-  authRequired,
+  rateLimitChat,       // IP-based (kept)
+  authRequired,        // moved up so req.user is set
+  rateLimitUserChat,   // now truly per-user
   verifyCsrf,
   upload.single('audio'),
   async (req, res) => {
@@ -883,6 +917,15 @@ app.post(
 
       // (Logging early for analytics)
       console.log(`[chat] session=${sessionId} mode=${roleMode} type=${roleType || '-'}`);
+      // --- Resolve user & ensure welcome bonus BEFORE any spend checks ---
+const userId = getUserIdFrom(req);
+const verifiedEmail = (req.user?.email || "").toLowerCase();
+const isOwnerByEmail = OWNER_EMAILS.has(verifiedEmail);
+
+// Ensure server-authoritative wallet exists + welcome credit applied if first time
+const wallet = ensureWelcome(userId);
+let isWalletActive = (wallet?.expires_at || 0) > Date.now();
+let isPremium = isOwnerByEmail || isWalletActive;
 
       // Simple server cooldown: 1 message per 2.5 seconds per session
       const nowMs = Date.now();
@@ -901,7 +944,36 @@ app.post(
 
       // Build final system prompt (safe even if roleType is null)
       const wrapper = roleMode === 'roleplay' ? roleWrapper(roleType) : strangerWrapper();
+// --- PRECHECK: block unaffordable / over-cap voice before any STT work ---
+if (req.file) {
+  // reuse usageKey already computed above
+  const remaining = remainingVoice(usageKey, isPremium);
 
+  // 🛡️ Silent size sanity check (~1.6MB ≈ short clip). No “5 sec” mention.
+  const MAX_BYTES_5S = 1_600_000;
+  if (req.file.size > MAX_BYTES_5S) {
+    return res.status(200).json({
+      reply: "Couldn't process that voice note—try again. 💛"
+    });
+  }
+
+  if (remaining <= 0) {
+    return res.status(200).json({
+      reply: "Aaj ke voice replies khatam ho gaye kal ka wait kro ya recharge kar lo 💛"
+    });
+  }
+
+  // coin check against already-ensured wallet
+  const need = VOICE_COST;
+  const have = (wallet.coins | 0);
+  if (!isOwnerByEmail && have < need) {
+    return res.status(200).json({
+      reply: "Voice bhejne ke liye coins kam hain. Pehle thoda recharge kar lo na? 💖",
+      locked: true
+    });
+  }
+}
+// --- END PRECHECK ---
       // If an audio file is present (voice note)
       if (req.file) {
         audioPath = req.file.path;
@@ -1197,11 +1269,9 @@ Aaj ki tareekh: ${req.body.clientDate}. Jab bhi koi baat ya sawal year/month/dat
         (timeInstruction || "") +
         (dateInstruction || "");
 
-      const verifiedEmail = (req.user?.email || "").toLowerCase(); // from Google token
-      const userIdForWallet = getUserIdFrom(req);
-      const w = getWallet(userIdForWallet);
-      const isWalletActive = (w?.expires_at || 0) > Date.now();
-      let isPremium = OWNER_EMAILS.has(verifiedEmail) || isWalletActive;
+      // (Already resolved above; keep one source of truth)
+isWalletActive = (wallet?.expires_at || 0) > Date.now();
+isPremium = isOwnerByEmail || isWalletActive;
 
         if (!isPremium && userReplyCount >= 10) {
         console.log("Free limit reached, locking chat...");
@@ -1223,13 +1293,9 @@ Aaj ki tareekh: ${req.body.clientDate}. Jab bhi koi baat ya sawal year/month/dat
 const willVoice = !!req.file || !!req.body.wantVoice || wantsVoice((userMessage || "").toLowerCase());
 const requiredCoins = willVoice ? VOICE_COST : TEXT_COST;
 
-const userIdForCharges = getUserIdFrom(req);
-ensureWelcome(userIdForCharges);
-const isOwnerByEmail = OWNER_EMAILS.has((req.user?.email || '').toLowerCase());
-
+// We already ensured wallet & resolved owner status above
 if (!isOwnerByEmail) {
-  const wcheck = getWallet(userIdForCharges);
-  if ((wcheck.coins | 0) < requiredCoins) {
+  if ((wallet.coins | 0) < requiredCoins) {
     return res.status(200).json({
       reply: "Balance low hai. Recharge kar lo na, phir main saath rahungi 💖",
       locked: true
@@ -1381,10 +1447,10 @@ if (!isOwnerByEmail) {
             const hostBase = process.env.SERVER_URL || `${req.protocol}://${req.get('host')}`;
             const audioUrl = `${hostBase}/audio/${audioFileName}`;
             let newWallet = null;
-            if (!OWNER_EMAILS.has((req.user?.email || '').toLowerCase())) {
-              newWallet = debitCoins(userIdForCharges, VOICE_COST, 'voice');
-            }
-            return res.json({ audioUrl, wallet: newWallet || getWallet(userIdForCharges) });
+            if (!isOwnerByEmail) {
+  newWallet = debitCoins(userId, VOICE_COST, 'voice');
+}
+return res.json({ audioUrl, wallet: newWallet || getWallet(userId) });
           } catch (e) {
             console.error("TTS generation failed:", e);
             return res.json({
@@ -1397,10 +1463,10 @@ if (!isOwnerByEmail) {
           ? clampWordsSmart(cleanedText, maxWords)
           : "Hmm, bolo—kya soch rahe the? 🙂";
         let newWallet = null;
-        if (!OWNER_EMAILS.has((req.user?.email || '').toLowerCase())) {
-          newWallet = debitCoins(userIdForCharges, TEXT_COST, 'text');
-        }
-        return res.json({ reply: safeReply, wallet: newWallet || getWallet(userIdForCharges) });
+        if (!isOwnerByEmail) {
+  newWallet = debitCoins(userId, TEXT_COST, 'text');
+}
+return res.json({ reply: safeReply, wallet: newWallet || getWallet(userId) });
 
       } catch (err) {
         console.error("Final error:", err);
@@ -1468,7 +1534,7 @@ app.get('/test-key', authRequired, async (req, res) => {
   }
 });
 // ---- Razorpay health ping ----
-app.get('/razorpay/health', async (req, res) => {
+app.get('/razorpay/health', limitHealth, async (req, res) => {
   try {
     await axios.get(
   'https://api.razorpay.com/v1/payment_links?count=1',
@@ -1480,7 +1546,7 @@ return res.json({ ok:true, mode: RAZORPAY_KEY_ID.startsWith('rzp_test_') ? 'test
   }
 });
 // Create a Payment Link for a pack (Daily/Weekly)
-app.post('/buy/:pack', authRequired, verifyCsrf, async (req, res) => {
+app.post('/buy/:pack', limitBuy, authRequired, verifyCsrf, async (req, res) => {
   const pack = String(req.params.pack || '').toLowerCase();
   const def = PACKS[pack];
   if (!def) return res.status(400).json({ ok:false, error:'bad_pack' });
@@ -1572,7 +1638,7 @@ if (existing) {
 }
 });
 // ======== DIRECT CHECKOUT (Orders API) ========
-app.post('/order/:pack', authRequired, verifyCsrf, async (req, res) => {
+app.post('/order/:pack', limitOrder, authRequired, verifyCsrf, async (req, res) => {
   const pack = String(req.params.pack || '').toLowerCase();
   const def  = PACKS[pack];
   if (!def) return res.status(400).json({ ok:false, error:'bad_pack' });
@@ -1612,7 +1678,7 @@ app.post('/order/:pack', authRequired, verifyCsrf, async (req, res) => {
     return res.status(500).json({ ok:false, error:'order_failed', details });
   }
 });
-app.post('/verify-order', authRequired, verifyCsrf, async (req, res) => {
+app.post('/verify-order', limitVerify, authRequired, verifyCsrf, async (req, res) => {
   try {
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body || {};
     if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
@@ -1654,7 +1720,7 @@ const { wallet, lastCredit } = creditPack(safeUserId, pack, razorpay_payment_id,
 });
 // ======== END DIRECT CHECKOUT ========
 // Verify the Payment Link callback and credit coins
-app.post('/verify-payment-link', authRequired, verifyCsrf, async (req, res) => {
+app.post('/verify-payment-link', limitVerify, authRequired, verifyCsrf, async (req, res) => {
   try {
     const { link_id, payment_id, reference_id, status } = req.body || {};
     if (!link_id || !payment_id || !reference_id || !status) {
@@ -1725,5 +1791,4 @@ app.post('/claim-welcome', authRequired, verifyCsrf, (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-
 
