@@ -923,7 +923,22 @@ const verifiedEmail = (req.user?.email || "").toLowerCase();
 const isOwnerByEmail = OWNER_EMAILS.has(verifiedEmail);
 
 // Ensure server-authoritative wallet exists + welcome credit applied if first time
-const wallet = ensureWelcome(userId);
+// === Wallet bootstrap (NO auto-credit here) ===
+const existedBefore = Object.prototype.hasOwnProperty.call(walletDB, userId);
+let wallet = getWallet(userId);
+wallet.txns = Array.isArray(wallet.txns) ? wallet.txns : [];
+
+// If this user is brand-new in our DB, create an empty wallet (0 coins).
+if (!existedBefore) {
+  wallet = { coins: 0, expires_at: 0, txns: [], welcome_claimed: false };
+  saveWallet(userId, wallet);
+}
+// If user existed already but older wallet didn’t have the flag, mark as claimed
+// (prevents the popup for returning users) — do NOT add coins here.
+else if (wallet.welcome_claimed !== true) {
+  wallet.welcome_claimed = true;
+  saveWallet(userId, wallet);
+}
 let isWalletActive = (wallet?.expires_at || 0) > Date.now();
 let isPremium = isOwnerByEmail || isWalletActive;
 
@@ -1768,21 +1783,36 @@ app.get('/wallet', authRequired, (req, res) => {
 app.post('/claim-welcome', authRequired, verifyCsrf, (req, res) => {
   try {
     const userId = getUserIdFrom(req);
-    // If user already exists in DB and already claimed, just return their wallet
     const existed = Object.prototype.hasOwnProperty.call(walletDB, userId);
-    const w = getWallet(userId);
+    let w = getWallet(userId);
+    w.txns = Array.isArray(w.txns) ? w.txns : [];
+
+    // If already claimed, just return
     if (w.welcome_claimed === true) {
       return res.json({ ok: true, wallet: w, claimed: false });
     }
 
-    // Only grant if this user has NO prior wallet entry (i.e., truly new in current DB)
-    if (!existed) {
-      const out = ensureWelcome(userId); // sets welcome_claimed + credits + txns
-      return res.json({ ok: true, wallet: out, claimed: true });
+    // 🚫 Old users must not get it:
+    // If this is an old wallet (it existed before and has any balance/txns), deny.
+    if (existed && ((w.coins | 0) > 0 || (w.txns && w.txns.length > 0))) {
+      return res.json({ ok: false, error: 'already_user' });
     }
 
-    // Old user with no welcome flag (e.g., legacy wallet) → do NOT grant automatically
-    return res.json({ ok: false, error: 'already_user' });
+    // ✅ New user path:
+    // Either (a) brand-new entry created by /chat with welcome_claimed:false,
+    // or (b) no entry yet (very rare, but allow).
+    if (!existed) {
+      // create a fresh entry first
+      w = { coins: 0, expires_at: 0, txns: [], welcome_claimed: false };
+    }
+
+    // Grant the one-time bonus now
+    w.coins = (w.coins | 0) + WELCOME_BONUS;
+    w.welcome_claimed = true;
+    w.txns.push({ at: Date.now(), type: 'credit', pack: 'welcome', coins: WELCOME_BONUS });
+    saveWallet(userId, w);
+
+    return res.json({ ok: true, wallet: w, claimed: true });
   } catch (e) {
     console.error('claim-welcome failed:', e);
     return res.status(500).json({ ok: false, error: 'server_error' });
@@ -1791,4 +1821,5 @@ app.post('/claim-welcome', authRequired, verifyCsrf, (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
