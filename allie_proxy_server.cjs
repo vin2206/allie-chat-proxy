@@ -4,6 +4,7 @@ const axios = require('axios');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto'); // add
 require('dotenv').config();
 // --- Google Sign-In token verification ---
 const { OAuth2Client } = require('google-auth-library');
@@ -119,7 +120,6 @@ const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
 const FormData = require('form-data');
-const crypto = require('crypto'); // add
 // Razorpay + URLs  (keep names consistent everywhere)
 // Pre-created order/link time-to-live (keep short so stale objects can't be reused)
 const ORDER_TTL_SEC = 15 * 60; // 15 minutes
@@ -137,6 +137,56 @@ const PACKS = {
 // Server-enforced costs (match UI)
 const TEXT_COST  = 10;
 const VOICE_COST = 18;
+
+// Minimal redaction/sanitization helpers (server-only)
+const IS_PROD = (process.env.NODE_ENV || '').toLowerCase() === 'production';
+
+// Keep only a tiny, safe subset from third-party error payloads
+function safeErr(errOrObj) {
+  const e = errOrObj || {};
+  const resp = e.response || {};
+  const data = resp.data || {};
+  const out = {
+    status: resp.status || data.status || undefined,
+    code: (data.error && data.error.code) || data.code || undefined,
+    id: data.id || undefined,
+    message: (data.error && data.error.description) || data.message || e.message || 'error'
+  };
+  // Short string fallback to avoid leaking full payloads
+  return out;
+}
+
+// Mask obvious emails in any string
+function maskEmails(s = '') {
+  return String(s).replace(
+    /([A-Za-z0-9._%+-])([A-Za-z0-9._%+-]*)(@[A-Za-z0-9.-]+\.[A-Za-z]{2,})/g,
+    (_, a, mid, tail) => a + (mid ? '****' : '') + tail
+  );
+}
+
+// Strip sensitive fields from client-sent /report-error payloads
+function sanitizeClientErrorPayload(raw = {}) {
+  const src = typeof raw === 'object' && raw ? raw : {};
+  const allow = {
+    message: String(src.message || '').slice(0, 4000),
+    stack: String(src.stack || '').slice(0, 4000),
+    endpoint: String(src.endpoint || ''),
+    requestId: String(src.requestId || ''),
+    location: String(src.location || ''),
+    details: typeof src.details === 'string'
+      ? src.details.slice(0, 2000)
+      : (typeof src.details === 'object' && src.details ? '[object]' : '')
+  };
+
+  // Remove token/cookie-like substrings just in case they leaked into text blobs
+  const STRIP = /(authorization|cookie|bb_sess|idtoken|x-csrf-token|api[_-]?key|secret)/ig;
+  for (const k of Object.keys(allow)) {
+    if (typeof allow[k] === 'string') {
+      allow[k] = maskEmails(allow[k].replace(STRIP, '[redacted]'));
+    }
+  }
+  return allow;
+}
 
 // 👇 ADD THESE TWO HELPERS HERE (used by /buy, /order, webhooks, verifiers)
 function makeRef(userId, pack) {
@@ -686,6 +736,25 @@ Notes:
   
 const app = express();
 app.set('trust proxy', true); // so req.ip is the real client IP behind Railway/LB
+// ---- Security headers (seatbelts) ----
+app.use((req, res, next) => {
+  // Force HTTPS on subsequent visits
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+
+  // Block clickjacking
+  res.setHeader('X-Frame-Options', 'DENY');
+
+  // Don’t leak full URLs when leaving the site
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+
+  // Prevent MIME sniffing
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+
+  // Only our origin can request mic; block other powerful features by default
+  res.setHeader('Permissions-Policy', "microphone=(self), camera=(), geolocation=()");
+
+  next();
+});
 function selfBase(req) {
   return process.env.SERVER_URL || `${req.protocol}://${req.get('host')}`;
 }
@@ -818,7 +887,7 @@ if (!createdAtSec || (nowSec - createdAtSec > ORDER_TTL_SEC)) {
           const safeUserId = userId || 'anon';
           if (pack && safeUserId) creditPack(safeUserId, pack, pay?.id || '', orderId);
         } catch (e) {
-          console.error('webhook fetch order failed', e?.response?.data || e.message);
+          console.error('webhook fetch order failed', safeErr(e));
         }
       }
     }
@@ -846,9 +915,9 @@ app.post('/report-error', authRequired, limitReport, async (req, res) => {
       return res.status(500).json({ success: false, message: 'Resend config missing' });
     }
 
-    console.log("Incoming /report-error body:", req.body);
-    const { error } = req.body;
-    const message = `An error occurred in Allie Chat Proxy:\n${JSON.stringify(error, null, 2)}`;
+        // Sanitize: accept only safe fields; no tokens/cookies/headers
+    const safe = sanitizeClientErrorPayload(req.body?.error || {});
+    const message = `An error occurred in Allie Chat Proxy:\n${JSON.stringify(safe, null, 2)}`;
 
     console.log("Sending email with Resend...");
 
@@ -992,8 +1061,7 @@ if (req.file) {
       // If an audio file is present (voice note)
       if (req.file) {
         audioPath = req.file.path;
-        console.log(`Audio uploaded by session ${sessionId}:`, audioPath);
-
+        if (!IS_PROD) console.log(`Audio uploaded by session ${sessionId}`);
         // --- Whisper STT integration ---
         const transcript = await transcribeWithWhisper(audioPath);
 
@@ -1640,15 +1708,15 @@ if (existing) {
     );
     return res.json({ ok:true, link_id: fresh.data.id, short_url: fresh.data.short_url });
   } catch (e3) {
-    console.error('recreate fresh payment_link failed:', e3?.response?.data || e3.message);
+    console.error('recreate fresh payment_link failed:', safeErr(e3));
   }
 }
     } catch (e2) {
-      console.error('failed to fetch existing payment_link:', e2?.response?.data || e2.message);
+      console.error('failed to fetch existing payment_link:', safeErr(e2));
     }
   }
 
-  console.error('buy link create failed:', details);
+  console.error('buy link create failed:', safeErr(details));
   return res.status(500).json({ ok:false, error:'create_failed', details });
 }
 });
@@ -1689,7 +1757,7 @@ app.post('/order/:pack', limitOrder, authRequired, verifyCsrf, async (req, res) 
     });
   } catch (e) {
     const details = e?.response?.data || { message: e.message };
-    console.error('order create failed:', details);
+    console.error('order create failed:', safeErr(details));
     return res.status(500).json({ ok:false, error:'order_failed', details });
   }
 });
@@ -1729,7 +1797,7 @@ if (!pack) return res.status(400).json({ ok:false, error:'bad_ref' });
 const { wallet, lastCredit } = creditPack(safeUserId, pack, razorpay_payment_id, razorpay_order_id);
     return res.json({ ok:true, wallet, lastCredit });
   } catch (e) {
-    console.error('verify-order failed', e?.response?.data || e.message);
+    console.error('verify-order failed', safeErr(e));
     return res.status(500).json({ ok:false, error:'verify_failed' });
   }
 });
@@ -1767,7 +1835,7 @@ if (!createdAtSec || (nowSec - createdAtSec > ORDER_TTL_SEC)) {
 const { wallet, lastCredit } = creditPack(safeUserId, pack, payment_id, link_id);
     return res.json({ ok:true, wallet, lastCredit });
   } catch (e) {
-    console.error('verify-payment-link failed', e?.response?.data || e.message);
+    console.error('verify-payment-link failed', safeErr(e));
     return res.status(500).json({ ok:false, error:'verify_failed' });
   }
 });
@@ -1814,12 +1882,10 @@ app.post('/claim-welcome', authRequired, verifyCsrf, (req, res) => {
 
     return res.json({ ok: true, wallet: w, claimed: true });
   } catch (e) {
-    console.error('claim-welcome failed:', e);
+    console.error('claim-welcome failed:', safeErr(e));
     return res.status(500).json({ ok: false, error: 'server_error' });
   }
 });
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-
-
