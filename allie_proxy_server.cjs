@@ -865,7 +865,15 @@ if (!createdAtSec || (nowSec - createdAtSec > ORDER_TTL_SEC)) {
       const { pack, userId } = parseRef(ref);
       const safeUserId = userId || 'anon';
       const paymentId = event?.payload?.payment?.entity?.id || '';
-      if (pack && safeUserId) creditPack(safeUserId, pack, paymentId, link?.id || '');
+      if (pack && safeUserId) {
+  const { lastCredit } = creditPack(safeUserId, pack, paymentId, link?.id || '');
+  await maybeSendCoinsEmailOnce({
+    userId: safeUserId,
+    userEmail: String(event?.payload?.payment?.entity?.email || '').toLowerCase() || '', // may be empty
+    pack,
+    lastCredit
+  });
+}
     } else if (event?.event === 'payment.captured') {
       const pay = event?.payload?.payment?.entity;
       const orderId = pay?.order_id;
@@ -885,7 +893,15 @@ if (!createdAtSec || (nowSec - createdAtSec > ORDER_TTL_SEC)) {
 }
           const { pack, userId } = parseRef(ref);
           const safeUserId = userId || 'anon';
-          if (pack && safeUserId) creditPack(safeUserId, pack, pay?.id || '', orderId);
+          if (pack && safeUserId) {
+  const { lastCredit } = creditPack(safeUserId, pack, pay?.id || '', orderId);
+  await maybeSendCoinsEmailOnce({
+    userId: safeUserId,
+    userEmail: String(pay?.email || '').toLowerCase() || '',
+    pack,
+    lastCredit
+  });
+}
         } catch (e) {
           console.error('webhook fetch order failed', safeErr(e));
         }
@@ -905,6 +921,77 @@ app.use('/audio', cors(), express.static(audioDir));   // ensure CORS headers on
 const resendAPIKey = process.env.RESEND_API_KEY;
 const fromEmail = process.env.FROM_EMAIL;
 const toEmail = process.env.SEND_TO_EMAIL;
+// ---- Coins email (simple, dedup-safe) ----
+async function sendCoinsEmail({ to, coins, amountINR, paymentId, balanceAfter }) {
+  try {
+    if (!resendAPIKey || !fromEmail || !to) return;
+
+    const shortPid = String(paymentId || '').slice(-8) || '—';
+    const amt = Number(amountINR || 0);
+
+    const html = `
+      <div style="font-family:Inter,system-ui,Segoe UI,Arial,sans-serif;line-height:1.5;color:#111">
+        <h2 style="margin:0 0 8px">Coins added: ${coins}</h2>
+        <p style="margin:0 0 14px">Your purchase was successful and coins are now available in your account.</p>
+        <table style="border-collapse:collapse">
+          <tr><td style="padding:2px 0;width:140px;color:#555">Payment ID</td><td style="padding:2px 0"><code>${shortPid}</code></td></tr>
+          <tr><td style="padding:2px 0;color:#555">Paid</td><td style="padding:2px 0">₹${amt}</td></tr>
+          <tr><td style="padding:2px 0;color:#555">Coins credited</td><td style="padding:2px 0"><b>${coins}</b></td></tr>
+          ${Number.isFinite(balanceAfter) ? `<tr><td style="padding:2px 0;color:#555">Balance now</td><td style="padding:2px 0">${balanceAfter}</td></tr>` : ``}
+        </table>
+        <p style="margin:14px 0 10px">Need help? Just reply to this email.</p>
+        <p style="margin:0;color:#777">— BuddyBy</p>
+      </div>
+    `;
+
+    await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${resendAPIKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: fromEmail, to, subject: `Coins added: ${coins}`, html })
+    });
+  } catch (e) {
+    console.error('sendCoinsEmail failed:', e?.message || e);
+  }
+}
+
+// Mark a specific txn as emailed (dedupe guard)
+function markTxnEmailed(userId, paymentId) {
+  if (!userId || !paymentId) return;
+  const w = getWallet(userId);
+  if (!Array.isArray(w.txns)) return;
+  let changed = false;
+  w.txns = w.txns.map(t => {
+    if ((t.paymentId === paymentId) && !t.emailed) { changed = true; return { ...t, emailed: true }; }
+    return t;
+  });
+  if (changed) saveWallet(userId, w);
+}
+
+// Helper to maybe send email once per payment
+async function maybeSendCoinsEmailOnce({ userId, userEmail, pack, lastCredit }) {
+  try {
+    if (!lastCredit || !pack || !userEmail) return;
+    const def = PACKS[pack];
+    if (!def) return;
+
+    // Already emailed?
+    const w = getWallet(userId);
+    const already = (Array.isArray(w.txns) && w.txns.some(t => t.paymentId === lastCredit.paymentId && t.emailed));
+    if (already) return;
+
+    await sendCoinsEmail({
+      to: (userEmail || '').toLowerCase(),
+      coins: Number(lastCredit.coins || 0),
+      amountINR: def.amount,
+      paymentId: lastCredit.paymentId,
+      balanceAfter: Number(w.coins || 0)
+    });
+
+    markTxnEmailed(userId, lastCredit.paymentId);
+  } catch (e) {
+    console.error('maybeSendCoinsEmailOnce failed:', e?.message || e);
+  }
+}
 const errorTimestamps = []; // Track repeated input format issues
 
 app.post('/report-error', authRequired, limitReport, async (req, res) => {
@@ -1795,7 +1882,16 @@ const safeUserId = userId || 'anon';
 if (!pack) return res.status(400).json({ ok:false, error:'bad_ref' });
 
 const { wallet, lastCredit } = creditPack(safeUserId, pack, razorpay_payment_id, razorpay_order_id);
-    return res.json({ ok:true, wallet, lastCredit });
+
+// send 1 BuddyBy email to the logged-in account (deduped)
+await maybeSendCoinsEmailOnce({
+  userId: safeUserId,
+  userEmail: (req.user?.email || ''),
+  pack,
+  lastCredit
+});
+
+return res.json({ ok:true, wallet, lastCredit });
   } catch (e) {
     console.error('verify-order failed', safeErr(e));
     return res.status(500).json({ ok:false, error:'verify_failed' });
@@ -1831,9 +1927,18 @@ const nowSec = Math.floor(Date.now() / 1000);
 if (!createdAtSec || (nowSec - createdAtSec > ORDER_TTL_SEC)) {
   return res.status(400).json({ ok:false, error:'link_expired' });
 }
+    
+    const { wallet, lastCredit } = creditPack(safeUserId, pack, payment_id, link_id);
 
-const { wallet, lastCredit } = creditPack(safeUserId, pack, payment_id, link_id);
-    return res.json({ ok:true, wallet, lastCredit });
+await maybeSendCoinsEmailOnce({
+  userId: safeUserId,
+  userEmail: (req.user?.email || ''),
+  pack,
+  lastCredit
+});
+
+return res.json({ ok:true, wallet, lastCredit });
+
   } catch (e) {
     console.error('verify-payment-link failed', safeErr(e));
     return res.status(500).json({ ok:false, error:'verify_failed' });
@@ -1889,3 +1994,4 @@ app.post('/claim-welcome', authRequired, verifyCsrf, (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
