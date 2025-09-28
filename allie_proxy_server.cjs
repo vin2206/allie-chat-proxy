@@ -19,11 +19,11 @@ const SESSION_ROLLING_THRESHOLD_MS = 3 * 24 * 60 * 60 * 1000; // renew when <3d 
 const CSRF_COOKIE = 'bb_csrf';
 function mintCsrf() { return crypto.randomBytes(32).toString('hex'); }
 function setCsrfCookie(res, token) {
-  // readable cookie is fine for double-submit (it must match header)
   res.cookie(CSRF_COOKIE, token, {
-    httpOnly: false,   // must be readable by JS to send in header
+    httpOnly: false,         // readable for double-submit header
     secure: true,
-    sameSite: 'none',
+    sameSite: 'lax',         // <— was 'none'
+    domain: '.buddyby.com',  // <— add this
     path: '/',
     maxAge: SESSION_TTL_MS,
   });
@@ -65,12 +65,12 @@ function verifySessionCookie(req) {
 function setSessionCookie(res, token) {
   res.cookie(SESSION_COOKIE, token, {
     httpOnly: true,
-    secure: true,          // required for SameSite=None
-    sameSite: 'none',      // cross-site
+    secure: true,
+    sameSite: 'lax',         // <— was 'none'
+    domain: '.buddyby.com',  // <— add this
     path: '/',
-    maxAge: SESSION_TTL_MS
+    maxAge: SESSION_TTL_MS,
   });
-  // (Re)mint a CSRF token alongside the session
   setCsrfCookie(res, mintCsrf());
 }
 
@@ -1994,4 +1994,3 @@ app.post('/claim-welcome', authRequired, verifyCsrf, (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-
