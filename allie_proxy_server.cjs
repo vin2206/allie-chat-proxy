@@ -224,10 +224,54 @@ const upload = multer({
 const dataDir   = path.join(__dirname, 'data');
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir);
 const walletFile = path.join(dataDir, 'wallet.json');
+// === BEGIN: tiny local backup helpers (no external deps) ===
+const backupDir = path.join(dataDir, 'backups');
+if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir);
+
+function atomicWrite(p, obj) {
+  const tmp = p + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2));
+  fs.renameSync(tmp, p);
+}
+
+function backupWalletSnapshot(wdb) {
+  try {
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const snapPath = path.join(backupDir, `wallet-${stamp}.json`);
+    // timestamped snapshot
+    atomicWrite(snapPath, wdb);
+    // rolling pointer for quick restore
+    const latestPath = path.join(backupDir, 'latest.json');
+    atomicWrite(latestPath, wdb);
+  } catch (e) {
+    console.error('wallet backup failed:', e?.message || e);
+  }
+}
+
+function maybeRestoreWalletFromBackup() {
+  try {
+    // If wallet.json exists and has content, do nothing
+    if (fs.existsSync(walletFile)) {
+      const txt = fs.readFileSync(walletFile, 'utf8').trim();
+      if (txt && txt !== '{}' && txt.length > 2) return;
+    }
+    // Try latest.json
+    const latestPath = path.join(backupDir, 'latest.json');
+    if (fs.existsSync(latestPath)) {
+      const latest = JSON.parse(fs.readFileSync(latestPath, 'utf8'));
+      atomicWrite(walletFile, latest);
+      console.warn('wallet.json was empty/missing → restored from backups/latest.json');
+    }
+  } catch (e) {
+    console.error('wallet restore check failed:', e?.message || e);
+  }
+}
+// === END: tiny local backup helpers ===
 
 function readJSON(p){ try { return JSON.parse(fs.readFileSync(p,'utf8')); } catch { return {}; } }
 function writeJSON(p,obj){ fs.writeFileSync(p, JSON.stringify(obj,null,2)); }
 
+maybeRestoreWalletFromBackup();              // ← NEW: safe no-op if not needed
 const walletDB = readJSON(walletFile);
 
 function getUserIdFrom(req) {
@@ -251,6 +295,7 @@ function getWallet(userId){
 function saveWallet(userId, w){
   walletDB[userId] = w;
   writeJSON(walletFile, walletDB);
+  backupWalletSnapshot(walletDB);            // ← NEW: keep timestamped + latest
 }
 // --- One-time welcome bonus (server-authoritative) ---
 const WELCOME_BONUS = 100;
@@ -1994,3 +2039,4 @@ app.post('/claim-welcome', authRequired, verifyCsrf, (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
