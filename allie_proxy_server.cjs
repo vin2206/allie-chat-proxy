@@ -780,6 +780,28 @@ Notes:
 - newer deny to dirty talk, continue with user story.`;
   
 const app = express();
+// >>> CORS shim for chat.buddyby.com (place right after `const app = express();`)
+const CORS_OK = new Set([
+  'https://chat.buddyby.com',
+  'http://localhost:5173',
+  'http://localhost:3000',
+  'http://127.0.0.1:3000'
+]);
+
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin && CORS_OK.has(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+  }
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-CSRF-Token');
+
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
+// <<< end CORS shim
 app.set('trust proxy', true); // so req.ip is the real client IP behind Railway/LB
 // ---- Security headers (seatbelts) ----
 app.use((req, res, next) => {
@@ -2039,4 +2061,5 @@ app.post('/claim-welcome', authRequired, verifyCsrf, (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
