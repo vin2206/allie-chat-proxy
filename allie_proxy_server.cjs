@@ -220,6 +220,15 @@ const upload = multer({
     cb(ok ? null : new Error('bad_type'), ok);
   }
 });
+// --- screenshot upload (in-memory, images only) ---
+const feedbackUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+  fileFilter: (req, file, cb) => {
+    const ok = /^image\/(png|jpe?g|webp|gif)$/i.test(file.mimetype);
+    cb(ok ? null : new Error('bad_type'), ok);
+  }
+});
 // --- simple JSON-backed wallet ---
 const dataDir   = path.join(__dirname, 'data');
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir);
@@ -780,28 +789,6 @@ Notes:
 - newer deny to dirty talk, continue with user story.`;
   
 const app = express();
-// >>> CORS shim for chat.buddyby.com (place right after `const app = express();`)
-const CORS_OK = new Set([
-  'https://chat.buddyby.com',
-  'http://localhost:5173',
-  'http://localhost:3000',
-  'http://127.0.0.1:3000'
-]);
-
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  if (origin && CORS_OK.has(origin)) {
-    res.setHeader('Access-Control-Allow-Origin', origin);
-    res.setHeader('Vary', 'Origin');
-  }
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-CSRF-Token');
-
-  if (req.method === 'OPTIONS') return res.sendStatus(204);
-  next();
-});
-// <<< end CORS shim
 app.set('trust proxy', true); // so req.ip is the real client IP behind Railway/LB
 // ---- Security headers (seatbelts) ----
 app.use((req, res, next) => {
@@ -1113,7 +1100,7 @@ app.post('/report-error', authRequired, limitReport, async (req, res) => {
   }
 });
 // --- Customer feedback -> email to FEEDBACK_TO (with optional screenshot) ---
-app.post('/feedback', authRequired, verifyCsrf, upload.single('screenshot'), async (req, res) => {
+app.post('/feedback', authRequired, verifyCsrf, feedbackUpload.single('screenshot'), async (req, res) => {
   try {
     const resendAPIKey = process.env.RESEND_API_KEY;
     const fromEmail    = process.env.FROM_EMAIL || 'support@buddyby.com';
@@ -1147,15 +1134,13 @@ app.post('/feedback', authRequired, verifyCsrf, upload.single('screenshot'), asy
     };
 
     // Optional screenshot
-    if (req.file && req.file.buffer) {
-      payload.attachments = [{
-        filename: req.file.originalname || 'screenshot.png',
-        content: req.file.buffer.toString('base64'),
-        path: undefined,
-        // Resend requires base64 + contentType
-        contentType: req.file.mimetype || 'image/png'
-      }];
-    }
+    if (req.file) {
+   payload.attachments = [{
+     filename: req.file.originalname || 'screenshot.png',
+     content: req.file.buffer.toString('base64'),
+     contentType: req.file.mimetype || 'image/png'
+   }];
+ }
 
     const r = await fetch('https://api.resend.com/emails', {
       method: 'POST',
@@ -2127,6 +2112,4 @@ app.post('/claim-welcome', authRequired, verifyCsrf, (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-
-
 
