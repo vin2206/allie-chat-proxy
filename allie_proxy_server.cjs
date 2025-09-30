@@ -1112,6 +1112,72 @@ app.post('/report-error', authRequired, limitReport, async (req, res) => {
     res.status(500).json({ success: false, message: err.message });
   }
 });
+// --- Customer feedback -> email to FEEDBACK_TO (with optional screenshot) ---
+app.post('/feedback', authRequired, verifyCsrf, upload.single('screenshot'), async (req, res) => {
+  try {
+    const resendAPIKey = process.env.RESEND_API_KEY;
+    const fromEmail    = process.env.FROM_EMAIL || 'support@buddyby.com';
+    const toEmail      = (process.env.FEEDBACK_TO || process.env.SEND_TO_EMAIL || '').toLowerCase();
+
+    if (!resendAPIKey || !fromEmail || !toEmail) {
+      console.error('Feedback mail config missing');
+      return res.status(500).json({ ok:false, error:'mail_config_missing' });
+    }
+
+    const msg  = String(req.body?.message || '').slice(0, 2000);
+    const meta = String(req.body?.meta || '').slice(0, 4000);
+    const userEmail = String(req.body?.userEmail || '').toLowerCase();
+    const userSub   = String(req.body?.userSub || '');
+
+    // Base HTML
+    const html =
+      `<div style="font-family:Inter,system-ui,Segoe UI,Arial,sans-serif">
+        <h3 style="margin:0 0 8px">New customer feedback</h3>
+        <p style="white-space:pre-wrap;margin:0 0 12px">${msg.replace(/[<>&]/g, s => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[s]))}</p>
+        <pre style="background:#fafafa;padding:10px;border:1px solid #eee;border-radius:8px;white-space:pre-wrap">${meta.replace(/[<>&]/g, s => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[s]))}</pre>
+        <p style="margin-top:12px;color:#555"><small>${userEmail || ''} ${userSub ? ' • ' + userSub : ''}</small></p>
+      </div>`;
+
+    // Build Resend payload
+    const payload = {
+      from: fromEmail,
+      to: toEmail,
+      subject: 'Shraddha — New Customer Feedback',
+      html
+    };
+
+    // Optional screenshot
+    if (req.file && req.file.buffer) {
+      payload.attachments = [{
+        filename: req.file.originalname || 'screenshot.png',
+        content: req.file.buffer.toString('base64'),
+        path: undefined,
+        // Resend requires base64 + contentType
+        contentType: req.file.mimetype || 'image/png'
+      }];
+    }
+
+    const r = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(payload)
+    });
+
+    if (!r.ok) {
+      const body = await r.text().catch(() => '');
+      console.error('Resend feedback failed:', body);
+      return res.status(500).json({ ok:false, error:'send_failed' });
+    }
+
+    return res.json({ ok:true });
+  } catch (e) {
+    console.error('feedback route error:', e?.message || e);
+    return res.status(500).json({ ok:false, error:'server_error' });
+  }
+});
 
  // FIXED /chat: handler wraps ALL your chat logic + rate-limit added
 app.post(
@@ -2061,5 +2127,6 @@ app.post('/claim-welcome', authRequired, verifyCsrf, (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
