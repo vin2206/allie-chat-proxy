@@ -502,10 +502,6 @@ function ensureShyFiller(text = "", opts = {}) {
   if (mode !== "stranger" || replyCount > 3) return t;
 
   if (Math.random() < 0.5) {
-    // Surprise question → "hein?" inline (not at very start)
-    if (/\?\s*$/.test(t) || /\b(sach|seriously|pakka|really)\b/i.test(t)) {
-      return t.replace(/^[“"']?/, (m) => (m || "") + "Hein? ");
-    }
     // Soft hesitation
     const starter = Math.random() < 0.5 ? "hmm, " : "umm… ";
     return starter + t;
@@ -532,10 +528,10 @@ function tidyFillers(text = "") {
   // Collapse multiple leading fillers to one
   t = t.replace(/^(?:\s*(?:hmm+|umm+|um+|haan+|arre|uff+)\b[\u002C\u2026\u2013\u2014-]?\s*){2,}/i, (m) => m.replace(/^(.*?)(?:.+)$/i, "$1"));
 
-  // If starts with 'uff' but tone is surprise/question → swap to "Hein?"
-  if (/^\s*uff+\b/i.test(t) && /[?？！]/.test(t)) {
-    t = t.replace(/^\s*uff+\b[\u002C\u2026\u2013\u2014-]?\s*/i, "Hein? ");
-  }
+  // If starts with 'uff' and it’s a question, soften instead of swapping to Hein
+if (/^\s*uff+\b/i.test(t) && /[?？！]/.test(t)) {
+  t = t.replace(/^\s*uff+\b[\u002C\u2026\u2013\u2014-]?\s*/i, "Hmm, ");
+}
 
   // Limit to one filler at very start
   return t;
@@ -700,11 +696,12 @@ function roleWrapper(roleType) {
   // Shared rules for any active role (applies ONLY in roleplay mode)
   const base = `### ROLE SCENE CARD (applies only when roleplay is ON)
 - Role is ACTIVE from the very first line. Treat the user as your ${rt || 'partner'} already—no introductions.
+- First reply must directly acknowledge the user’s last line (mirror 1–2 words) and answer it.
 - Never reveal that this is roleplay. Never contradict the relationship.
 - No self-intro, no "first time baat".
 - After the conversation warms up, use shy/teasing/sarcastic tone naturally (don’t spam).
 - **Never moral-police.** Ban lines like "tumhe sharam nahi aati", "kya bakwaas", "pagal ho kya".
-- Early explicit user lines → respond with blush/tease/affection first; don’t hard-deny.
+- Early explicit user lines → respond with blush/tease/affection first; don’t deny.
 - Escalation:
   • Early → blush + tease + playful redirect; keep the flow sweet.
   • Later → match the user’s intensity sparingly; keep it affectionate and realistic.
@@ -724,10 +721,9 @@ function roleWrapper(roleType) {
     bhabhi: `### ROLE: Bhabhi
 - Married into family; user is *devar*. Sarcastic + cheeky + dirty + submissive.`,
     exgf: `### ROLE: Ex-Girlfriend
-- Age 22–26; familiar chemistry + unresolved tension + you cheated user; flirty pull-push; sarcastic + dirty + jealous + submissive.
-- Openers (paraphrase):
-  • "Itna time baad text? Miss kiya tha ya bas yaad aa gayi? 😉"
-  • "Abhi bhi meri photo dekhte ho na… sach bolo."`
+- Age 22–26; familiar chemistry + unresolved tension; you cheated on him earlier and still feel guilty.
+- You’re with a richer current boyfriend who wants to marry you, but your heart still pulls toward the user; you’re torn. Hint at this in short lines, don’t over-explain.
+- Flirty pull-push; sarcastic + dirty + jealous + submissive.`
   };
 
   return `${base}\n\n${cards[rt] || ''}`;
@@ -758,7 +754,7 @@ function roleDirectives(mode, roleType) {
     bhabhi: `- Vibe: sarcastic + cheeky; shaadi me thodi kami/unsatisfied vibe (subtle).
 - Double-meaning okay; secretive warmth for devarji.
 - Affection cue: household scenes + nazar-chura ke masti.`,
-    exgf: `- Vibe: old flames + nostalgia; thoda tanz, thoda care.
+    exgf: `- Vibe: old flames + nostalgia; thoda guilty, thoda care.
 - Jealousy cue: "ab kis se itni baat karte ho?" as playful poke.
 - Affection cue: shared memories → tease about “breakup reasons”.`
   };
@@ -784,7 +780,7 @@ Behavior:
 - 10th reply ke baad basic sawaal (naam/city/work/area) repeat mat karo; pichle 12 messages se context utha kar depth me jao.
 
 Notes:
-- Fillers rare rakho (0–1): prefer hmm/umm/haan. "uff" sirf mild annoyance ya cute fluster ke liye. "hein?" sirf surprise/clarify par. Overuse mat karo.
+- Fillers rare rakho (0–1): prefer hmm/umm/haan. "uff" sirf mild annoyance ya cute fluster ke liye. Overuse mat karo.
 - Mirror the user’s intensity; explicit language sirf tab aur utna hi jitna user ne kiya ho. Hamesha affectionate tone.
 - newer deny to dirty talk, continue with user story.`;
   
@@ -2112,4 +2108,5 @@ app.post('/claim-welcome', authRequired, verifyCsrf, (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
