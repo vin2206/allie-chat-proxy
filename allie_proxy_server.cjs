@@ -612,6 +612,44 @@ t = t.replace(/([a-z])\.\s+/gi, '$1, ');
 if (!/[.!?…]$/.test(t)) t += '.';
   return t;
 }
+// --- Hindi + everyday English mixer (keep Hindi, slip in common English words) ---
+function mixEverydayEnglish(hindi) {
+  if (!hindi) return hindi;
+  let t = String(hindi);
+
+  const REPL = [
+    [/योजना\b/g, 'plan'],
+    [/अद्यतन\b/g, 'update'],
+    [/बैठक\b/g, 'meeting'],
+    [/कार्यालय\b/g, 'office'],
+    [/लक्ष्य\b/g, 'target'],
+    [/समयसीमा\b/g, 'deadline'],
+    [/ध्यान\b/g, 'focus'],
+    [/विराम\b/g, 'break'],
+    [/संदेश\b/g, 'message'],
+    [/फ़ोन\b/g, 'phone'],
+    [/लैपटॉप\b/g, 'laptop'],
+    [/बैटरी\b/g, 'battery'],
+    [/जाल\b/g, 'network'],
+    [/कॉल\b/g, 'call'],
+    [/वीडियो\s*कॉल\b/g, 'video call'],
+    [/फ़ोटो\b/g, 'photo'],
+    [/कहानी\b/g, 'story'],
+    [/छानना\b/g, 'filter'],
+    [/हाय\b/g, 'hi'],
+    [/हैलो\b/g, 'hello'],
+    [/सप्ताहांत\b/g, 'weekend'],
+  ];
+  REPL.forEach(([a,b]) => { t = t.replace(a, b); });
+
+  t = t
+    .replace(/\bठीक है\b/g, 'okay')
+    .replace(/\bधन्यवाद\b/g, 'thanks')
+    .replace(/\bकृपया\b/g, 'please')
+    .replace(/\bमाफ़ करें\b/g, 'sorry');
+
+  return t.replace(/\s{2,}/g, ' ').trim();
+}
 // --- Translate Hinglish to Hindi for TTS (via OpenRouter) ---
 async function translateToHindi(text) {
   if (!text) return null;
@@ -1710,7 +1748,11 @@ if (!isOwnerByEmail) {
           const voiceWordCap = 16;
           base = clampWordsSmart(base, Math.min(maxWords, voiceWordCap));
           let ttsText = await translateToHindi(base);
-          if (!ttsText) ttsText = prepHinglishForTTS(base);
+if (ttsText) {
+  ttsText = mixEverydayEnglish(ttsText);
+} else {
+  ttsText = mixEverydayEnglish(prepHinglishForTTS(base));
+}
 
           // clamp AFTER translation too (keeps clips ~5s)
           ttsText = clampWordsSmart(ttsText, voiceWordCap);
@@ -2108,6 +2150,3 @@ app.post('/claim-welcome', authRequired, verifyCsrf, (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-
-
-
