@@ -696,9 +696,9 @@ async function generateShraddhaVoice(text, filePath) {
     text,
     model_id: "eleven_multilingual_v2", // HD quality model
     voice_settings: {
-  stability: 0.60,        // less monotone, a bit snappier
+  stability: 0.50,        // less monotone, a bit snappier
   similarity_boost: 0.80, // still Isha, but allows livelier cadence
-  style: 0.55,            // more expressive = sounds faster
+  style: 0.65,            // more expressive = sounds faster
   use_speaker_boost: true
 }
   };
@@ -2150,3 +2150,4 @@ app.post('/claim-welcome', authRequired, verifyCsrf, (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
