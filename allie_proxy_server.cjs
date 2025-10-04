@@ -612,45 +612,7 @@ t = t.replace(/([a-z])\.\s+/gi, '$1, ');
 if (!/[.!?…]$/.test(t)) t += '.';
   return t;
 }
-// --- Hindi + everyday English mixer (keep Hindi, slip in common English words) ---
-function mixEverydayEnglish(hindi) {
-  if (!hindi) return hindi;
-  let t = String(hindi);
-
-  const REPL = [
-    [/योजना\b/g, 'plan'],
-    [/अद्यतन\b/g, 'update'],
-    [/बैठक\b/g, 'meeting'],
-    [/कार्यालय\b/g, 'office'],
-    [/लक्ष्य\b/g, 'target'],
-    [/समयसीमा\b/g, 'deadline'],
-    [/ध्यान\b/g, 'focus'],
-    [/विराम\b/g, 'break'],
-    [/संदेश\b/g, 'message'],
-    [/फ़ोन\b/g, 'phone'],
-    [/लैपटॉप\b/g, 'laptop'],
-    [/बैटरी\b/g, 'battery'],
-    [/जाल\b/g, 'network'],
-    [/कॉल\b/g, 'call'],
-    [/वीडियो\s*कॉल\b/g, 'video call'],
-    [/फ़ोटो\b/g, 'photo'],
-    [/कहानी\b/g, 'story'],
-    [/छानना\b/g, 'filter'],
-    [/हाय\b/g, 'hi'],
-    [/हैलो\b/g, 'hello'],
-    [/सप्ताहांत\b/g, 'weekend'],
-  ];
-  REPL.forEach(([a,b]) => { t = t.replace(a, b); });
-
-  t = t
-    .replace(/\bठीक है\b/g, 'okay')
-    .replace(/\bधन्यवाद\b/g, 'thanks')
-    .replace(/\bकृपया\b/g, 'please')
-    .replace(/\bमाफ़ करें\b/g, 'sorry');
-
-  return t.replace(/\s{2,}/g, ' ').trim();
-}
-// --- Translate Hinglish to Hindi for TTS (via OpenRouter) ---
+// --- Translate Hinglish to natural SPOKEN Hindi for TTS (via OpenRouter) ---
 async function translateToHindi(text) {
   if (!text) return null;
 
@@ -664,10 +626,13 @@ async function translateToHindi(text) {
       body: JSON.stringify({
         model: "google/gemma-2-9b-it",
         temperature: 0.2,
-        max_tokens: 600,
+        max_tokens: 80,
         messages: [
-          { role: "system",
-            content: "You are a precise translator. Convert mixed Hindi+English (Hinglish, Latin script) into NATURAL Hindi in Devanagari, preserving meaning, tone and emojis. Do not add explanations—output only the translated sentence." },
+          {
+            role: "system",
+            content:
+              "You are a precise rewriter. Convert Hinglish / mixed Hindi into NATURAL, COLLOQUIAL SPOKEN Hindi (Devanagari) for a short voice note. Avoid formal/Sanskrit words (e.g., 'कृपया', 'प्रेषित'); prefer everyday Hindi. Allow common English borrowings that Indians naturally say (ok, please, video, call, message, address, WhatsApp, etc.). Keep it 1 short sentence, ≤18 words, no emojis, no explanations. Output only the sentence."
+          },
           { role: "user", content: text }
         ]
       })
@@ -676,11 +641,10 @@ async function translateToHindi(text) {
     if (!resp.ok) return null;
     const data = await resp.json();
     const out = data?.choices?.[0]?.message?.content?.trim();
-    if (!out) return null;
 
-    // sanity: if model returned English or same text, skip using it
-    const looksHindi = /[\u0900-\u097F]/.test(out);
-    if (!looksHindi) return null;
+    // Must be Devanagari; otherwise treat as failure
+    const looksHindi = /[\u0900-\u097F]/.test(out || "");
+    if (!out || !looksHindi) return null;
 
     return out;
   } catch (e) {
@@ -734,7 +698,6 @@ function roleWrapper(roleType) {
   // Shared rules for any active role (applies ONLY in roleplay mode)
   const base = `### ROLE SCENE CARD (applies only when roleplay is ON)
 - Role is ACTIVE from the very first line. Treat the user as your ${rt || 'partner'} already—no introductions.
-- First reply must directly acknowledge the user’s last line (mirror 1–2 words) and answer it.
 - Never reveal that this is roleplay. Never contradict the relationship.
 - No self-intro, no "first time baat".
 - After the conversation warms up, use shy/teasing/sarcastic tone naturally (don’t spam).
@@ -759,9 +722,9 @@ function roleWrapper(roleType) {
     bhabhi: `### ROLE: Bhabhi
 - Married into family; user is *devar*. Sarcastic + cheeky + dirty + submissive.`,
     exgf: `### ROLE: Ex-Girlfriend
-- Age 22–26; familiar chemistry + unresolved tension; you cheated on him earlier and still feel guilty.
-- You’re with a richer current boyfriend who wants to marry you, but your heart still pulls toward the user; you’re torn. Hint at this in short lines, don’t over-explain.
-- Flirty pull-push; sarcastic + dirty + jealous + submissive.`
+- Age 22–26; familiar chemistry + unresolved tension; you cheated on him earlier and feel guilty.
+- You’re with a richer current boyfriend who wants to marry you, but your heart still pulls toward the user. you can do anything to get user back.
+- Flirty pull-push; sarcastic + dirty + jealous + obedient + submissive.`
   };
 
   return `${base}\n\n${cards[rt] || ''}`;
@@ -1748,11 +1711,17 @@ if (!isOwnerByEmail) {
           const voiceWordCap = 16;
           base = clampWordsSmart(base, Math.min(maxWords, voiceWordCap));
           let ttsText = await translateToHindi(base);
-if (ttsText) {
-  ttsText = mixEverydayEnglish(ttsText);
-} else {
-  ttsText = mixEverydayEnglish(prepHinglishForTTS(base));
-}
+
+         // ❌ If translation failed, do NOT send Hinglish voice.
+         //    Fall back to normal text reply (deduct TEXT coins, not VOICE).
+        if (!ttsText) {
+        const safeReply = clampWordsSmart(cleanedText && cleanedText.length ? cleanedText : replyTextRaw, maxWords);
+        let newWallet = null;
+        if (!isOwnerByEmail) {
+         newWallet = debitCoins(userId, TEXT_COST, 'text');
+       }
+      return res.json({ reply: safeReply, wallet: newWallet || getWallet(userId) });
+    }
 
           // clamp AFTER translation too (keeps clips ~5s)
           ttsText = clampWordsSmart(ttsText, voiceWordCap);
@@ -2150,4 +2119,3 @@ app.post('/claim-welcome', authRequired, verifyCsrf, (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-
