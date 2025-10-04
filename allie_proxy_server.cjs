@@ -612,8 +612,8 @@ t = t.replace(/([a-z])\.\s+/gi, '$1, ');
 if (!/[.!?…]$/.test(t)) t += '.';
   return t;
 }
-// --- Translate Hinglish to natural SPOKEN Hindi for TTS (via OpenRouter) ---
-async function translateToHindi(text) {
+// --- Translate to Bilingual VOICE (Hindi base + 20% English, feminine) ---
+async function translateToBilingualVoice(text) {
   if (!text) return null;
 
   try {
@@ -631,8 +631,18 @@ async function translateToHindi(text) {
           {
             role: "system",
             content:
-          "You are a precise rewriter. Convert Hinglish / mixed Hindi into NATURAL, COLLOQUIAL SPOKEN Hindi (Devanagari) for a short voice note. Avoid formal/Sanskrit words (e.g., 'कृपया', 'प्रेषित'); prefer everyday Hindi. Allow common English borrowings that Indians naturally say (ok, please, video, call, message, address, WhatsApp, etc.). Write in one flowing sentence with minimal commas (fast-paced), ≤18 words, no emojis, no explanations. Output only the sentence."
-         },
+`You are a precise rewriter for VOICE lines.
+Goal: Convert Hinglish/mixed Hindi into NATURAL, COLLOQUIAL Hindi written in Devanagari, but keep ~20% common English words inline (3–5 per sentence) so it sounds modern. Avoid formal/Sanskrit words (e.g., 'कृपया', 'प्रेषित', 'समस्या'). Prefer everyday Hindi + common English tokens.
+
+Style rules:
+- Base language: Hindi (Devanagari).
+- Ratio: ~80% Hindi tokens, ~20% English tokens (3–5 English words per sentence; don't cluster more than 2 in a row).
+- Keep/insert common English words: class, office, meeting, video/call, message, phone, network, internet, Wi-Fi, app, login, update, plan, weekend, mood, vibe, scene, chill/relax, breakfast/lunch/dinner, gym, music, movie, payment, wallet, premium, order, voice note.
+- Gender/persona: First-person feminine only — use forms like "मैं ... रही हूँ", "मैं कर रही हूँ", "मैं भेज रही हूँ", "मैं सो गई", "हो गई".
+- Prosody: 1–2 short sentences, ≤18 words total, no emojis, minimal commas, ends with . ! ? (not …).
+
+Output only the final line(s) — no explanations.`
+          },
           { role: "user", content: text }
         ]
       })
@@ -640,17 +650,59 @@ async function translateToHindi(text) {
 
     if (!resp.ok) return null;
     const data = await resp.json();
-    const out = data?.choices?.[0]?.message?.content?.trim();
+    let out = data?.choices?.[0]?.message?.content?.trim();
 
-    // Must be Devanagari; otherwise treat as failure
-    const looksHindi = /[\u0900-\u097F]/.test(out || "");
-    if (!out || !looksHindi) return null;
+    // Must include Devanagari and at least one ASCII word (English token)
+    const hasHi = /[\u0900-\u097F]/.test(out || "");
+    const hasEn = /\b[a-zA-Z][a-zA-Z-]*\b/.test(out || "");
+    if (!out || !hasHi) return null;
+
+    // If model forgot English, sprinkle a couple safe tokens
+    if (!hasEn) {
+      out = out.replace(/([.?!])$/, " message kar do$1");
+    }
 
     return out;
   } catch (e) {
-    console.error("translateToHindi failed:", e);
+    console.error("translateToBilingualVoice failed:", e);
     return null;
   }
+}
+// Force first-person feminine phrasing on common patterns
+function enforceFeminineHindi(s = "") {
+  let t = String(s || "");
+
+  // --- Latinized Hindi → feminine
+  t = t.replace(/\braha\s+hu\b/gi, "rahi hoon");
+  t = t.replace(/\braha\s+hun\b/gi, "rahi hoon");
+  t = t.replace(/\b(kar|bol|likh|bhej|soch|pa)\s+raha\s+hu\b/gi, (m) =>
+    m.replace(/raha\s+hu/gi, "rahi hoon")
+  );
+  t = t.replace(/\bgaya\b/gi, "gayi");
+  t = t.replace(/\bhua\b/gi, "hui");
+  t = t.replace(/\bnah[iī]\s*pa\s*raha\b/gi, "nahi pa rahi");
+  t = t.replace(/\bsend\s*nahi\s*kar\s*pa\s*raha\b/gi, "send nahi kar pa rahi");
+
+  // --- Devanagari Hindi → feminine
+  t = t.replace(/रहा हूँ/g, "रही हूँ");
+  t = t.replace(/रहा हूं/g, "रही हूं"); // common alt without chandrabindu
+  t = t.replace(/गया/g, "गई");
+  t = t.replace(/हुआ/g, "हुई");
+
+  return t.trim();
+}
+
+// Make sure 80/20 feel: add 2–4 safe English tokens if missing
+function ensureBilingualRatio(s = "") {
+  let t = String(s || "").trim();
+  const englishCount = (t.match(/\b[a-zA-Z][a-zA-Z-]*\b/g) || []).length;
+
+  if (englishCount >= 2) return t;
+
+  // inject safe modern tokens near the end
+  const inject = ["message", "call", "voice note"];
+  const lastPunct = t.match(/[.?!]/) ? "" : ".";
+  return (t + (t.endsWith(" ") ? "" : " ") + inject.slice(0, 2 - englishCount).join(" ") + lastPunct).trim();
 }
 
 // Utility: Generate speech from text
@@ -1710,7 +1762,9 @@ if (!isOwnerByEmail) {
           }
           const voiceWordCap = 16;
           base = clampWordsSmart(base, Math.min(maxWords, voiceWordCap));
-          let ttsText = await translateToHindi(base);
+          let ttsText = await translateToBilingualVoice(base);
+          ttsText = enforceFeminineHindi(ttsText);
+          ttsText = ensureBilingualRatio(ttsText);
 
          // ❌ If translation failed, do NOT send Hinglish voice.
          //    Fall back to normal text reply (deduct TEXT coins, not VOICE).
@@ -2119,4 +2173,5 @@ app.post('/claim-welcome', authRequired, verifyCsrf, (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
