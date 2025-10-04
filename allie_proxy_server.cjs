@@ -631,8 +631,8 @@ async function translateToHindi(text) {
           {
             role: "system",
             content:
-              "You are a precise rewriter. Convert Hinglish / mixed Hindi into NATURAL, COLLOQUIAL SPOKEN Hindi (Devanagari) for a short voice note. Avoid formal/Sanskrit words (e.g., 'कृपया', 'प्रेषित'); prefer everyday Hindi. Allow common English borrowings that Indians naturally say (ok, please, video, call, message, address, WhatsApp, etc.). Keep it 1 short sentence, ≤18 words, no emojis, no explanations. Output only the sentence."
-          },
+          "You are a precise rewriter. Convert Hinglish / mixed Hindi into NATURAL, COLLOQUIAL SPOKEN Hindi (Devanagari) for a short voice note. Avoid formal/Sanskrit words (e.g., 'कृपया', 'प्रेषित'); prefer everyday Hindi. Allow common English borrowings that Indians naturally say (ok, please, video, call, message, address, WhatsApp, etc.). Write in one flowing sentence with minimal commas (fast-paced), ≤18 words, no emojis, no explanations. Output only the sentence."
+         },
           { role: "user", content: text }
         ]
       })
@@ -660,9 +660,9 @@ async function generateShraddhaVoice(text, filePath) {
     text,
     model_id: "eleven_multilingual_v2", // HD quality model
     voice_settings: {
-  stability: 0.50,        // less monotone, a bit snappier
+  stability: 0.40,        // less monotone, a bit snappier
   similarity_boost: 0.80, // still Isha, but allows livelier cadence
-  style: 0.65,            // more expressive = sounds faster
+  style: 0.85,            // more expressive = sounds faster
   use_speaker_boost: true
 }
   };
@@ -2119,3 +2119,4 @@ app.post('/claim-welcome', authRequired, verifyCsrf, (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
