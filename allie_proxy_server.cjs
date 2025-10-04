@@ -586,6 +586,7 @@ function prepHinglishForTTS(text) {
 // strip fillers up front (so they don't reach TTS)
   let t = (text || '')
   .replace(/\b(amm+|um+|hmm+|haan+|huh+)\b/gi, '')
+  .replace(/।/g, ', ')        // Hindi full stop → comma (shorter pause)
   .replace(/\s*,\s*/g, ', ')
   .replace(/\s*\.\s*/g, '. ')
   .replace(/ {2,}/g, ' ')
@@ -602,11 +603,11 @@ function prepHinglishForTTS(text) {
   // Avoid over-stopping on conjunctions
 t = t.replace(/\b(?:par|aur|lekin|kyunki)\b\s*\.\s*/gi, ', ');
 
-// Merge short sentences into longer ones for faster flow
-t = t.replace(/([a-z])\.\s+([a-z])/gi, '$1, $2');
+// Merge sentences more aggressively (also swallow stray commas)
+t = t.replace(/([^\d\W])\.\s+([^\d\W])/gi, '$1 $2');
 
 // Reduce heavy pauses at most sentence ends
-t = t.replace(/([a-z])\.\s+/gi, '$1, ');
+t = t.replace(/([^\d\W])\.\s+/gi, '$1 ');
 
 // Make sure final sentence ends properly
 if (!/[.!?…]$/.test(t)) t += '.';
@@ -658,8 +659,8 @@ async function generateShraddhaVoice(text, filePath) {
     text,
     model_id: "eleven_multilingual_v2", // HD quality model
     voice_settings: {
-  stability: 0.40,        // less monotone, a bit snappier
-  similarity_boost: 0.80, // still Isha, but allows livelier cadence
+  stability: 0.25,        // less monotone, a bit snappier
+  similarity_boost: 0.85, // still Isha, but allows livelier cadence
   style: 0.85,            // more expressive = sounds faster
   use_speaker_boost: true
 }
@@ -1716,9 +1717,11 @@ if (!isOwnerByEmail) {
 
           // final clean
           ttsText = (ttsText || "")
-            .replace(/\b(amm|um+|hmm+|haan+|huh+)\b/gi, "")
-            .replace(/\s{2,}/g, " ")
-            .trim();
+          .replace(/\b(amm|um+|hmm+|haan+|huh+)\b/gi, "")
+          .replace(/,+/g, ",")          // collapse comma runs
+          .replace(/,\s+/g, " ")         // many commas → plain spaces
+          .replace(/\s{2,}/g, " ")
+          .trim();
 
           try {
             const audioFileName = `${sessionId}-${Date.now()}.mp3`;
