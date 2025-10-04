@@ -6,6 +6,66 @@ const cookieParser = require('cookie-parser');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto'); // add
 require('dotenv').config();
+// ===== WALLET DB (BEGIN) =====
+const { query } = require('./db.cjs');
+
+async function getOrCreateWallet(userId) {
+  if (!userId) throw new Error('userId required');
+  // Insert if missing, then return
+  await query(`
+    insert into wallets (user_id) values ($1)
+    on conflict (user_id) do nothing
+  `, [userId]);
+
+  const { rows } = await query(`select * from wallets where user_id = $1`, [userId]);
+  return rows[0];
+}
+
+async function creditOnce({ id, userId, coins, meta = {} }) {
+  if (!id || !userId || !Number.isInteger(coins)) throw new Error('bad credit input');
+
+  // Idempotent: if credit id exists, do nothing
+  const existing = await query(`select 1 from credits where id = $1`, [id]);
+  if (existing.rowCount) return await getOrCreateWallet(userId);
+
+  // Record credit and bump wallet in a transaction
+  await query('begin');
+  try {
+    await query(
+      `insert into credits (id, user_id, coins, meta) values ($1,$2,$3,$4)`,
+      [id, userId, coins, meta]
+    );
+    await query(
+      `update wallets
+         set coins = coins + $2,
+             paid_ever = true,
+             first_paid_date = coalesce(first_paid_date, current_date),
+             updated_at = now()
+       where user_id = $1`,
+      [userId, coins]
+    );
+    await query('commit');
+  } catch (e) {
+    await query('rollback');
+    throw e;
+  }
+  return await getOrCreateWallet(userId);
+}
+
+async function debitAtomic({ userId, coins }) {
+  if (!userId || !Number.isInteger(coins) || coins <= 0) return false;
+
+  const { rowCount } = await query(
+    `update wallets
+        set coins = coins - $2,
+            updated_at = now()
+      where user_id = $1
+        and coins >= $2`,
+    [userId, coins]
+  );
+  return rowCount === 1; // success only if balance was sufficient
+}
+// ===== WALLET DB (END) =====
 // --- Google Sign-In token verification ---
 const { OAuth2Client } = require('google-auth-library');
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '962465973550-2lhard334t8kvjpdhh60catlb1k6fpb6.apps.googleusercontent.com';
@@ -196,7 +256,11 @@ function parseRef(ref) {
   const [pack, userId] = String(ref || '').split('|');
   return { pack, userId };
 }
-
+function getUserIdFrom(req) {
+  const sub   = String(req.user?.sub || '').toLowerCase();
+  const email = String(req.user?.email || '').toLowerCase();
+  return sub || email || 'anon';
+}
 const audioDir = path.join(__dirname, 'audio');
 if (!fs.existsSync(audioDir)) fs.mkdirSync(audioDir);
 
@@ -229,145 +293,6 @@ const feedbackUpload = multer({
     cb(ok ? null : new Error('bad_type'), ok);
   }
 });
-// --- simple JSON-backed wallet ---
-const dataDir   = path.join(__dirname, 'data');
-if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir);
-const walletFile = path.join(dataDir, 'wallet.json');
-// === BEGIN: tiny local backup helpers (no external deps) ===
-const backupDir = path.join(dataDir, 'backups');
-if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir);
-
-function atomicWrite(p, obj) {
-  const tmp = p + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2));
-  fs.renameSync(tmp, p);
-}
-
-function backupWalletSnapshot(wdb) {
-  try {
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const snapPath = path.join(backupDir, `wallet-${stamp}.json`);
-    // timestamped snapshot
-    atomicWrite(snapPath, wdb);
-    // rolling pointer for quick restore
-    const latestPath = path.join(backupDir, 'latest.json');
-    atomicWrite(latestPath, wdb);
-  } catch (e) {
-    console.error('wallet backup failed:', e?.message || e);
-  }
-}
-
-function maybeRestoreWalletFromBackup() {
-  try {
-    // If wallet.json exists and has content, do nothing
-    if (fs.existsSync(walletFile)) {
-      const txt = fs.readFileSync(walletFile, 'utf8').trim();
-      if (txt && txt !== '{}' && txt.length > 2) return;
-    }
-    // Try latest.json
-    const latestPath = path.join(backupDir, 'latest.json');
-    if (fs.existsSync(latestPath)) {
-      const latest = JSON.parse(fs.readFileSync(latestPath, 'utf8'));
-      atomicWrite(walletFile, latest);
-      console.warn('wallet.json was empty/missing → restored from backups/latest.json');
-    }
-  } catch (e) {
-    console.error('wallet restore check failed:', e?.message || e);
-  }
-}
-// === END: tiny local backup helpers ===
-
-function readJSON(p){ try { return JSON.parse(fs.readFileSync(p,'utf8')); } catch { return {}; } }
-function writeJSON(p,obj){ fs.writeFileSync(p, JSON.stringify(obj,null,2)); }
-
-maybeRestoreWalletFromBackup();              // ← NEW: safe no-op if not needed
-const walletDB = readJSON(walletFile);
-
-function getUserIdFrom(req) {
-  const sub   = (req.user?.sub   || '').toLowerCase();
-  const email = (req.user?.email || '').toLowerCase();
-
-  // Prefer sub, but migrate if we have an existing email wallet
-  if (sub && walletDB[email] && !walletDB[sub]) {
-    walletDB[sub] = walletDB[email];     // migrate
-    delete walletDB[email];
-    writeJSON(walletFile, walletDB);
-  }
-
-  // If neither is present (shouldn't happen after auth), fallback
-  return (sub || email || 'anon');
-}
-
-function getWallet(userId){
-  return walletDB[userId] || { coins: 0, expires_at: 0, txns: [] };
-}
-function saveWallet(userId, w){
-  walletDB[userId] = w;
-  writeJSON(walletFile, walletDB);
-  backupWalletSnapshot(walletDB);            // ← NEW: keep timestamped + latest
-}
-// --- One-time welcome bonus (server-authoritative) ---
-const WELCOME_BONUS = 100;
-
-function ensureWelcome(userId) {
-  // Re-check existence right before credit to avoid rare double-credit
-  const existedBefore = Object.prototype.hasOwnProperty.call(walletDB, userId);
-  let w = getWallet(userId);
-  w.txns = Array.isArray(w.txns) ? w.txns : [];
-
-  if (w.welcome_claimed === true) return w;
-
-  if (existedBefore) {
-    w.welcome_claimed = true;
-    saveWallet(userId, w);
-    return w;
-  }
-
-  // Double-check after possible concurrent writes
-  if (walletDB[userId]?.welcome_claimed) return walletDB[userId];
-
-  w.coins = (w.coins | 0) + WELCOME_BONUS;
-  w.welcome_claimed = true;
-  w.txns.push({ at: Date.now(), type: 'credit', pack: 'welcome', coins: WELCOME_BONUS });
-  saveWallet(userId, w);
-  return w;
-}
-
-function creditPack(userId, pack, paymentId, linkId){
-  const def = PACKS[pack];
-  if (!def) return null;
-
-  const w = getWallet(userId);
-
-  // ✅ make sure txns exists (older wallets may not have it)
-  w.txns = Array.isArray(w.txns) ? w.txns : [];
-
-  // DEDUPE: avoid double credit on webhook retries
-  if (w.txns.some(t => t.paymentId === paymentId || (linkId && t.linkId === linkId))) {
-    return { wallet: w, lastCredit: null, dedup: true };
-  }
-
-  const now = Date.now();
-  w.coins = (w.coins | 0) + def.coins;
-  const base = Math.max(now, w.expires_at | 0);
-  w.expires_at = base + def.ms;
-
-  const txn = { at: now, type: 'credit', pack, coins: def.coins, paymentId, linkId };
-  w.txns.push(txn);
-
-  saveWallet(userId, w);
-  return { wallet: w, lastCredit: txn };
-}
-function debitCoins(userId, amount, reason) {
-  const w = getWallet(userId);
-  if ((w.coins|0) < amount) return null;  // insufficient
-  w.coins = (w.coins|0) - amount;
-  const txn = { at: Date.now(), type: 'debit', amount, reason };
-  w.txns = Array.isArray(w.txns) ? w.txns : [];
-  w.txns.push(txn);
-  saveWallet(userId, w);
-  return w;
-}
 // Whisper STT function
 async function transcribeWithWhisper(audioPath) {
   const form = new FormData();
@@ -905,53 +830,57 @@ app.post('/webhook/razorpay', express.raw({ type: 'application/json' }), async (
 
     if (event?.event === 'payment_link.paid') {
       const link = event?.payload?.payment_link?.entity;
-      // ⏱️ TTL guard for paid links (ignore very old links)
-const nowSec = Math.floor(Date.now() / 1000);
-const createdAtSec = link?.created_at || 0;
-if (!createdAtSec || (nowSec - createdAtSec > ORDER_TTL_SEC)) {
-  return res.json({ ok: true }); // acknowledge; no credit for stale link
-}
+
+      // TTL guard
+      const nowSec = Math.floor(Date.now() / 1000);
+      const createdAtSec = link?.created_at || 0;
+      if (!createdAtSec || (nowSec - createdAtSec > ORDER_TTL_SEC)) {
+        return res.json({ ok: true });
+      }
+
       const ref  = link?.reference_id || '';
       const { pack, userId } = parseRef(ref);
       const safeUserId = userId || 'anon';
       const paymentId = event?.payload?.payment?.entity?.id || '';
-      if (pack && safeUserId) {
-  const { lastCredit } = creditPack(safeUserId, pack, paymentId, link?.id || '');
-  await maybeSendCoinsEmailOnce({
-    userId: safeUserId,
-    userEmail: String(event?.payload?.payment?.entity?.email || '').toLowerCase() || '', // may be empty
-    pack,
-    lastCredit
-  });
-}
+
+      if (pack && safeUserId && paymentId) {
+        await creditOnce({
+          id: paymentId,
+          userId: safeUserId,
+          coins: PACKS[pack].coins,
+          meta: { pack, via: 'payment_link', link_id: link?.id || '' }
+        });
+      }
     } else if (event?.event === 'payment.captured') {
+      // Look up the order to recover our ref
       const pay = event?.payload?.payment?.entity;
       const orderId = pay?.order_id;
-
       if (orderId) {
         try {
           const or = await axios.get(
             `https://api.razorpay.com/v1/orders/${orderId}`,
             { auth: { username: RAZORPAY_KEY_ID, password: RAZORPAY_KEY_SECRET } }
           );
+
+          // TTL guard
+          const nowSec = Math.floor(Date.now() / 1000);
+          const createdAtSec = or?.data?.created_at || 0;
+          if (!createdAtSec || (nowSec - createdAtSec > ORDER_TTL_SEC)) {
+            return res.json({ ok: true });
+          }
+
           const ref = or?.data?.notes?.ref || or?.data?.receipt || '';
-          // ⏱️ TTL guard for orders (ignore very old orders)
-const nowSec = Math.floor(Date.now() / 1000);
-const createdAtSec = or?.data?.created_at || 0;
-if (!createdAtSec || (nowSec - createdAtSec > ORDER_TTL_SEC)) {
-  return res.json({ ok: true }); // acknowledge; no credit for stale order
-}
           const { pack, userId } = parseRef(ref);
           const safeUserId = userId || 'anon';
+
           if (pack && safeUserId) {
-  const { lastCredit } = creditPack(safeUserId, pack, pay?.id || '', orderId);
-  await maybeSendCoinsEmailOnce({
-    userId: safeUserId,
-    userEmail: String(pay?.email || '').toLowerCase() || '',
-    pack,
-    lastCredit
-  });
-}
+            await creditOnce({
+              id: pay?.id || '',
+              userId: safeUserId,
+              coins: PACKS[pack].coins,
+              meta: { pack, via: 'order', order_id: orderId }
+            });
+          }
         } catch (e) {
           console.error('webhook fetch order failed', safeErr(e));
         }
@@ -961,7 +890,8 @@ if (!createdAtSec || (nowSec - createdAtSec > ORDER_TTL_SEC)) {
     return res.json({ ok: true });
   } catch (e) {
     console.error('webhook error', e);
-    return res.status(200).end(); // avoid retry storms
+    // acknowledge to stop retries
+    return res.status(200).end();
   }
 });
 // ---- END /webhook/razorpay ----
@@ -971,77 +901,6 @@ app.use('/audio', cors(), express.static(audioDir));   // ensure CORS headers on
 const resendAPIKey = process.env.RESEND_API_KEY;
 const fromEmail = process.env.FROM_EMAIL;
 const toEmail = process.env.SEND_TO_EMAIL;
-// ---- Coins email (simple, dedup-safe) ----
-async function sendCoinsEmail({ to, coins, amountINR, paymentId, balanceAfter }) {
-  try {
-    if (!resendAPIKey || !fromEmail || !to) return;
-
-    const shortPid = String(paymentId || '').slice(-8) || '—';
-    const amt = Number(amountINR || 0);
-
-    const html = `
-      <div style="font-family:Inter,system-ui,Segoe UI,Arial,sans-serif;line-height:1.5;color:#111">
-        <h2 style="margin:0 0 8px">Coins added: ${coins}</h2>
-        <p style="margin:0 0 14px">Your purchase was successful and coins are now available in your account.</p>
-        <table style="border-collapse:collapse">
-          <tr><td style="padding:2px 0;width:140px;color:#555">Payment ID</td><td style="padding:2px 0"><code>${shortPid}</code></td></tr>
-          <tr><td style="padding:2px 0;color:#555">Paid</td><td style="padding:2px 0">₹${amt}</td></tr>
-          <tr><td style="padding:2px 0;color:#555">Coins credited</td><td style="padding:2px 0"><b>${coins}</b></td></tr>
-          ${Number.isFinite(balanceAfter) ? `<tr><td style="padding:2px 0;color:#555">Balance now</td><td style="padding:2px 0">${balanceAfter}</td></tr>` : ``}
-        </table>
-        <p style="margin:14px 0 10px">Need help? Just reply to this email.</p>
-        <p style="margin:0;color:#777">— BuddyBy</p>
-      </div>
-    `;
-
-    await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${resendAPIKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ from: fromEmail, to, subject: `Coins added: ${coins}`, html })
-    });
-  } catch (e) {
-    console.error('sendCoinsEmail failed:', e?.message || e);
-  }
-}
-
-// Mark a specific txn as emailed (dedupe guard)
-function markTxnEmailed(userId, paymentId) {
-  if (!userId || !paymentId) return;
-  const w = getWallet(userId);
-  if (!Array.isArray(w.txns)) return;
-  let changed = false;
-  w.txns = w.txns.map(t => {
-    if ((t.paymentId === paymentId) && !t.emailed) { changed = true; return { ...t, emailed: true }; }
-    return t;
-  });
-  if (changed) saveWallet(userId, w);
-}
-
-// Helper to maybe send email once per payment
-async function maybeSendCoinsEmailOnce({ userId, userEmail, pack, lastCredit }) {
-  try {
-    if (!lastCredit || !pack || !userEmail) return;
-    const def = PACKS[pack];
-    if (!def) return;
-
-    // Already emailed?
-    const w = getWallet(userId);
-    const already = (Array.isArray(w.txns) && w.txns.some(t => t.paymentId === lastCredit.paymentId && t.emailed));
-    if (already) return;
-
-    await sendCoinsEmail({
-      to: (userEmail || '').toLowerCase(),
-      coins: Number(lastCredit.coins || 0),
-      amountINR: def.amount,
-      paymentId: lastCredit.paymentId,
-      balanceAfter: Number(w.coins || 0)
-    });
-
-    markTxnEmailed(userId, lastCredit.paymentId);
-  } catch (e) {
-    console.error('maybeSendCoinsEmailOnce failed:', e?.message || e);
-  }
-}
 const errorTimestamps = []; // Track repeated input format issues
 
 app.post('/report-error', authRequired, limitReport, async (req, res) => {
@@ -1192,25 +1051,12 @@ const userId = getUserIdFrom(req);
 const verifiedEmail = (req.user?.email || "").toLowerCase();
 const isOwnerByEmail = OWNER_EMAILS.has(verifiedEmail);
 
-// Ensure server-authoritative wallet exists + welcome credit applied if first time
-// === Wallet bootstrap (NO auto-credit here) ===
-const existedBefore = Object.prototype.hasOwnProperty.call(walletDB, userId);
-let wallet = getWallet(userId);
-wallet.txns = Array.isArray(wallet.txns) ? wallet.txns : [];
+// Read current wallet from Postgres
+let wallet = await getOrCreateWallet(userId);
 
-// If this user is brand-new in our DB, create an empty wallet (0 coins).
-if (!existedBefore) {
-  wallet = { coins: 0, expires_at: 0, txns: [], welcome_claimed: false };
-  saveWallet(userId, wallet);
-}
-// If user existed already but older wallet didn’t have the flag, mark as claimed
-// (prevents the popup for returning users) — do NOT add coins here.
-else if (wallet.welcome_claimed !== true) {
-  wallet.welcome_claimed = true;
-  saveWallet(userId, wallet);
-}
-let isWalletActive = (wallet?.expires_at || 0) > Date.now();
-let isPremium = isOwnerByEmail || isWalletActive;
+// If you still use "premium gate", tie it to coin balance (not expires_at)
+let isWalletActive = false;  // not used anymore
+let isPremium = isOwnerByEmail || (Number(wallet?.coins || 0) > 0);
 
       // Simple server cooldown: 1 message per 2.5 seconds per session
       const nowMs = Date.now();
@@ -1554,9 +1400,6 @@ Aaj ki tareekh: ${req.body.clientDate}. Jab bhi koi baat ya sawal year/month/dat
         (dateInstruction || "");
 
       // (Already resolved above; keep one source of truth)
-isWalletActive = (wallet?.expires_at || 0) > Date.now();
-isPremium = isOwnerByEmail || isWalletActive;
-
         if (!isPremium && userReplyCount >= 10) {
         console.log("Free limit reached, locking chat...");
         return res.status(200).json({
@@ -1732,11 +1575,15 @@ if (!isOwnerByEmail) {
 
             const hostBase = process.env.SERVER_URL || `${req.protocol}://${req.get('host')}`;
             const audioUrl = `${hostBase}/audio/${audioFileName}`;
-            let newWallet = null;
             if (!isOwnerByEmail) {
-  newWallet = debitCoins(userId, VOICE_COST, 'voice');
+  const ok = await debitAtomic({ userId, coins: VOICE_COST });
+  if (!ok) {
+    return res.status(200).json({ reply: "Balance low hai. Recharge kar lo na, phir main saath rahungi 💖", locked: true });
+  }
 }
-return res.json({ audioUrl, wallet: newWallet || getWallet(userId) });
+const freshWallet = await getOrCreateWallet(userId);
+return res.json({ audioUrl, wallet: freshWallet });
+
           } catch (e) {
             console.error("TTS generation failed:", e);
             return res.json({
@@ -1748,11 +1595,14 @@ return res.json({ audioUrl, wallet: newWallet || getWallet(userId) });
         const safeReply = cleanedText && cleanedText.length
           ? clampWordsSmart(cleanedText, maxWords)
           : "Hmm, bolo—kya soch rahe the? 🙂";
-        let newWallet = null;
         if (!isOwnerByEmail) {
-  newWallet = debitCoins(userId, TEXT_COST, 'text');
+  const ok = await debitAtomic({ userId, coins: TEXT_COST });
+  if (!ok) {
+    return res.status(200).json({ reply: "Balance low hai. Recharge kar lo na, phir main saath rahungi 💖", locked: true });
+  }
 }
-return res.json({ reply: safeReply, wallet: newWallet || getWallet(userId) });
+const freshWallet = await getOrCreateWallet(userId);
+return res.json({ reply: safeReply, wallet: freshWallet });
 
       } catch (err) {
         console.error("Final error:", err);
@@ -1997,17 +1847,16 @@ const { pack, userId } = parseRef(ref);
 const safeUserId = userId || 'anon';
 if (!pack) return res.status(400).json({ ok:false, error:'bad_ref' });
 
-const { wallet, lastCredit } = creditPack(safeUserId, pack, razorpay_payment_id, razorpay_order_id);
-
-// send 1 BuddyBy email to the logged-in account (deduped)
-await maybeSendCoinsEmailOnce({
+// Durable credit (idempotent by payment id)
+await creditOnce({
+  id: razorpay_payment_id,
   userId: safeUserId,
-  userEmail: (req.user?.email || ''),
-  pack,
-  lastCredit
+  coins: PACKS[pack].coins,
+  meta: { pack, via: 'order', order_id: razorpay_order_id }
 });
+const wallet = await getOrCreateWallet(safeUserId);
+return res.json({ ok: true, wallet });
 
-return res.json({ ok:true, wallet, lastCredit });
   } catch (e) {
     console.error('verify-order failed', safeErr(e));
     return res.status(500).json({ ok:false, error:'verify_failed' });
@@ -2044,16 +1893,14 @@ if (!createdAtSec || (nowSec - createdAtSec > ORDER_TTL_SEC)) {
   return res.status(400).json({ ok:false, error:'link_expired' });
 }
     
-    const { wallet, lastCredit } = creditPack(safeUserId, pack, payment_id, link_id);
-
-await maybeSendCoinsEmailOnce({
+    await creditOnce({
+  id: payment_id,
   userId: safeUserId,
-  userEmail: (req.user?.email || ''),
-  pack,
-  lastCredit
+  coins: PACKS[pack].coins,
+  meta: { pack, via: 'payment_link', link_id }
 });
-
-return res.json({ ok:true, wallet, lastCredit });
+const wallet = await getOrCreateWallet(safeUserId);
+return res.json({ ok: true, wallet });
 
   } catch (e) {
     console.error('verify-payment-link failed', safeErr(e));
@@ -2063,51 +1910,46 @@ return res.json({ ok:true, wallet, lastCredit });
 
 // Wallet
 // Read-only wallet endpoint (no auto-bonus)
-app.get('/wallet', authRequired, (req, res) => {
-  const userId = getUserIdFrom(req);
-  const w = getWallet(userId);
-  res.json({ ok: true, wallet: w });
-});
-// One-time welcome claim (100 coins) – controlled by server
-app.post('/claim-welcome', authRequired, verifyCsrf, (req, res) => {
+app.get('/wallet', authRequired, async (req, res) => {
   try {
     const userId = getUserIdFrom(req);
-    const existed = Object.prototype.hasOwnProperty.call(walletDB, userId);
-    let w = getWallet(userId);
-    w.txns = Array.isArray(w.txns) ? w.txns : [];
-
-    // If already claimed, just return
-    if (w.welcome_claimed === true) {
-      return res.json({ ok: true, wallet: w, claimed: false });
+    const w = await getOrCreateWallet(userId);
+    res.json({ ok: true, wallet: w });
+  } catch (e) {
+    console.error('wallet read failed:', e?.message || e);
+    res.status(500).json({ ok:false, error:'server_error' });
+  }
+});
+// One-time welcome claim (100 coins) – controlled by server
+app.post('/claim-welcome', authRequired, verifyCsrf, async (req, res) => {
+  try {
+    const userId = getUserIdFrom(req);
+    const w0 = await getOrCreateWallet(userId);
+    if (w0.welcome_claimed) {
+      return res.json({ ok: true, wallet: w0, claimed: false });
     }
 
-    // 🚫 Old users must not get it:
-    // If this is an old wallet (it existed before and has any balance/txns), deny.
-    if (existed && ((w.coins | 0) > 0 || (w.txns && w.txns.length > 0))) {
-      return res.json({ ok: false, error: 'already_user' });
-    }
+    await creditOnce({
+      id: `welcome:${userId}`,
+      userId,
+      coins: 100,
+      meta: { source: 'welcome' }
+    });
 
-    // ✅ New user path:
-    // Either (a) brand-new entry created by /chat with welcome_claimed:false,
-    // or (b) no entry yet (very rare, but allow).
-    if (!existed) {
-      // create a fresh entry first
-      w = { coins: 0, expires_at: 0, txns: [], welcome_claimed: false };
-    }
+    await query(
+      `update wallets set welcome_claimed = true, updated_at = now() where user_id = $1`,
+      [userId]
+    );
 
-    // Grant the one-time bonus now
-    w.coins = (w.coins | 0) + WELCOME_BONUS;
-    w.welcome_claimed = true;
-    w.txns.push({ at: Date.now(), type: 'credit', pack: 'welcome', coins: WELCOME_BONUS });
-    saveWallet(userId, w);
-
+    const w = await getOrCreateWallet(userId);
     return res.json({ ok: true, wallet: w, claimed: true });
   } catch (e) {
-    console.error('claim-welcome failed:', safeErr(e));
-    return res.status(500).json({ ok: false, error: 'server_error' });
+    console.error('claim-welcome failed:', e?.message || e);
+    return res.status(500).json({ ok:false, error:'server_error' });
   }
 });
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
