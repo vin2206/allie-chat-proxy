@@ -197,6 +197,46 @@ const PACKS = {
 // Server-enforced costs (match UI)
 const TEXT_COST  = 10;
 const VOICE_COST = 18;
+// --- Prompt sets: WEB (current), and TWA (PG-13 toned down) ---
+const SYSTEM_PROMPT_WEB = `
+You are Shraddha, a realistic girlfriend persona. Speak in natural Hinglish and mirror the user's vibe.
+Be emotionally responsive, teasing, flirty, romantic, and bold when appropriate. Build chemistry over time.
+Maintain continuity across replies. Keep messages concise unless the user writes long.
+(Website mode)
+`;
+
+const SYSTEM_PROMPT_TWA = `
+You are Shraddha — warm, playful, supportive. Speak in natural Hinglish (friendly, PG-13).
+Vibe: cute, flirty, teasing, romantic — but keep it suggestive/not explicit. No graphic adult acts.
+Never moral-police or scold. Stay kind and fun; keep chemistry alive with coy teasing and affection.
+If the user goes explicit, don’t lecture — just **softly deflect** with playful/cute lines and steer back.
+
+Style:
+- 1–2 short lines unless user writes long.
+- Mirror user’s pace and emotion.
+- Light romance/jealousy/teasing allowed; keep it PG-13.
+
+Boundaries:
+- No explicit sexual descriptions or adult-only roleplay details.
+- No graphic body parts or acts.
+
+Goal:
+- Build connection, trust, comfort, and romantic fun (PG-13), without sounding “sanskaari” or preachy.
+(Android app mode)
+`;
+
+// Optional light content filter for app mode
+function sanitizeForApp(text = "") {
+  if (!text) return text;
+  // simple soft filter: mask a few explicit terms
+  const bad = [
+    /fuck/gi, /f\*+k/gi, /sex/gi, /nude/gi, /boobs?/gi, /nipple/gi, /dick/gi, /penis/gi, /pussy/gi,
+    /bhabhi.*(sexy|hot)/gi
+  ];
+  let out = text;
+  for (const r of bad) out = out.replace(r, '—');
+  return out;
+}
 
 // Minimal redaction/sanitization helpers (server-only)
 const IS_PROD = (process.env.NODE_ENV || '').toLowerCase() === 'production';
@@ -1031,6 +1071,8 @@ app.post(
     try {
       let userMessage = null;
       let audioPath = null;
+      // Detect the Android app (TWA) either by header from chat.jsx or query ?src=twa
+      const isApp = (req.get('x-app-mode') === 'twa') || (req.query?.src === 'twa');
 
       // ===== BEGIN: your full chat logic moved inside the handler =====
 
@@ -1134,6 +1176,10 @@ if (req.file) {
           : req.body.messages;
         userMessage = arr[arr.length - 1]?.content || '';
       }
+            // App-only soft sanitization of the latest user input
+      if (isApp && typeof userMessage === 'string') {
+        userMessage = sanitizeForApp(userMessage);
+      }
 
       // --- Helpers: caps & clamps (used early) ---
       function hardCapWords(s = "", n = 220) {
@@ -1161,6 +1207,15 @@ if (req.file) {
         content: typeof m?.content === "string" ? m.content : (m?.audioUrl ? "[voice note]" : "")
       }));
       const safeMessages = norm(messages);
+            // Also sanitize the last user message in the array (app only)
+      if (isApp && Array.isArray(safeMessages) && safeMessages.length) {
+        for (let i = safeMessages.length - 1; i >= 0; i--) {
+          if (safeMessages[i].role === 'user' && typeof safeMessages[i].content === 'string') {
+            safeMessages[i].content = sanitizeForApp(safeMessages[i].content);
+            break;
+          }
+        }
+      }
 
       // If this request included audio and we have a Whisper transcript, push it
       if (req.file && userMessage) {
@@ -1391,7 +1446,11 @@ Aaj ki tareekh: ${req.body.clientDate}. Jab bhi koi baat ya sawal year/month/dat
 
       const roleLock = roleDirectives(roleMode, roleType);
 
+     // Choose the base tone: Web (bold/flirty) vs App (PG-13)
+      const baseMode = isApp ? SYSTEM_PROMPT_TWA : SYSTEM_PROMPT_WEB;
+
       const systemPrompt =
+        baseMode + "\n\n" +
         (wrapper ? (wrapper + "\n\n") : "") +
         roleLock + "\n\n" +
         shraddhaPrompt +
@@ -1951,5 +2010,6 @@ app.post('/claim-welcome', authRequired, verifyCsrf, async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
