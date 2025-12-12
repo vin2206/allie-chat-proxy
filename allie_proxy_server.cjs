@@ -1,5 +1,6 @@
 const express = require('express');
 const axios = require('axios');
+const fs = require('fs');
 // REMOVE body-parser completely (not needed)
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
@@ -144,14 +145,144 @@ async function verifyGoogleToken(idToken) {
     picture: payload.picture || ''
   };
 }
+// ===== Guest + Trial + Merge helpers =====
+function hasBearerToken(req) {
+  return /^Bearer\s+.+/i.test(req.get('authorization') || '');
+}
+
+function mintGuestId() {
+  return `gid_${crypto.randomBytes(16).toString('hex')}`;
+}
+
+function isGuestId(sub = "") {
+  return /^gid_[a-f0-9]{32}$/i.test(String(sub || ""));
+}
+
+// One-time trial credit (idempotent via credits.id), WITHOUT setting paid_ever
+async function grantTrialOnce({ userId, origin = "guest" }) {
+  if (!TRIAL_ENABLED) return await getOrCreateWallet(userId);
+
+  const creditId = `trial:${userId}`;
+  const existing = await query(`select 1 from credits where id = $1`, [creditId]);
+  if (existing.rowCount) return await getOrCreateWallet(userId);
+
+  await query('begin');
+  try {
+    await query(
+      `insert into credits (id, user_id, coins, meta) values ($1,$2,$3,$4)`,
+      [creditId, userId, TRIAL_AMOUNT, { source: 'trial', origin }]
+    );
+
+    await query(
+      `update wallets
+         set coins = coins + $2,
+             updated_at = now()
+       where user_id = $1`,
+      [userId, TRIAL_AMOUNT]
+    );
+
+    await query('commit');
+  } catch (e) {
+    await query('rollback');
+    throw e;
+  }
+
+  return await getOrCreateWallet(userId);
+}
+
+// Merge guest wallet -> Google wallet (idempotent, safe)
+async function mergeWallets({ fromUserId, toUserId }) {
+  if (!fromUserId || !toUserId) return;
+  if (fromUserId === toUserId) return;
+
+  await query('begin');
+  try {
+    // ensure both wallets exist
+    await query(`insert into wallets (user_id) values ($1) on conflict (user_id) do nothing`, [fromUserId]);
+    await query(`insert into wallets (user_id) values ($1) on conflict (user_id) do nothing`, [toUserId]);
+
+    // lock rows
+    const { rows: fromRows } = await query(`select * from wallets where user_id = $1 for update`, [fromUserId]);
+    const { rows: toRows   } = await query(`select * from wallets where user_id = $1 for update`, [toUserId]);
+
+    const from = fromRows[0];
+    const to   = toRows[0];
+
+    const fromCoins = Number(from?.coins || 0);
+
+    // move balance
+    if (fromCoins > 0) {
+      await query(
+        `update wallets set coins = coins + $2, updated_at = now() where user_id = $1`,
+        [toUserId, fromCoins]
+      );
+    }
+
+    // move ledger/credits history so trial/purchases follow the user
+    await query(`update credits set user_id = $2 where user_id = $1`, [fromUserId, toUserId]);
+    // ---- Prevent trial double-claim after merge ----
+const fromTrialId = `trial:${fromUserId}`;
+const toTrialId   = `trial:${toUserId}`;
+
+// If destination doesn't already have a trial id, rename guest trial -> google trial
+const toHasTrial = await query(`select 1 from credits where id = $1`, [toTrialId]);
+
+if (!toHasTrial.rowCount) {
+  await query(`update credits set id = $2 where id = $1`, [fromTrialId, toTrialId]);
+} else {
+  // If google already has a trial record, remove guest trial record
+  await query(`delete from credits where id = $1`, [fromTrialId]);
+}
+
+    // delete guest wallet (prevents reuse/double dipping)
+    await query(`delete from wallets where user_id = $1`, [fromUserId]);
+
+    await query('commit');
+  } catch (e) {
+    await query('rollback');
+    throw e;
+  }
+}
 
 async function authRequired(req, res, next) {
-  // 1) Try our own rolling session cookie first
+  // ✅ If a Bearer token is present, ALWAYS prefer it (so guest -> google upgrade works)
+  if (hasBearerToken(req)) {
+    try {
+      const m = (req.get('authorization') || '').match(/^Bearer\s+(.+)$/i);
+      const idToken = m && m[1];
+      const verified = await verifyGoogleToken(idToken);
+
+      // If we previously had a guest session cookie, merge guest wallet -> google wallet
+      const oldSess = verifySessionCookie(req);
+      const oldSub = String(oldSess?.sub || '');
+      const newSub = String(verified?.sub || '').toLowerCase();
+
+      if (oldSub && isGuestId(oldSub) && newSub) {
+        await mergeWallets({ fromUserId: oldSub, toUserId: newSub });
+      }
+
+      req.user = verified;
+
+      // Mint first-party session for next requests
+      const token = mintSession(verified);
+      setSessionCookie(res, token);
+
+      return next();
+    } catch (e) {
+      return res.status(401).json({ ok:false, error:'auth_required' });
+    }
+  }
+
+  // 1) Try our own rolling session cookie (guest or google)
   const sess = verifySessionCookie(req);
   if (sess?.sub || sess?.email) {
-    req.user = { email: String(sess.email || '').toLowerCase(), sub: String(sess.sub || ''), picture: sess.picture || '' };
+    req.user = {
+      email: String(sess.email || '').toLowerCase(),
+      sub: String(sess.sub || ''),
+      picture: sess.picture || ''
+    };
 
-    // Rolling renewal: if close to expiry, mint a fresh cookie
+    // Rolling renewal
     const msLeft = (sess.exp * 1000) - Date.now();
     if (msLeft < SESSION_ROLLING_THRESHOLD_MS) {
       const fresh = mintSession(req.user);
@@ -160,23 +291,9 @@ async function authRequired(req, res, next) {
     return next();
   }
 
-  // 2) Fallback: accept Google ID token (first login or cookie lost)
-  try {
-    const m = (req.get('authorization') || '').match(/^Bearer\s+(.+)$/i);
-    const idToken = m && m[1];
-    const verified = await verifyGoogleToken(idToken);
-    req.user = verified;
-
-    // Mint first-party session for next requests
-    const token = mintSession(verified);
-    setSessionCookie(res, token);
-
-    return next();
-  } catch (e) {
-    return res.status(401).json({ ok:false, error:'auth_required' });
-  }
+  return res.status(401).json({ ok:false, error:'auth_required' });
 }
-const fs = require('fs');
+
 const path = require('path');
 const multer = require('multer');
 const FormData = require('form-data');
@@ -194,9 +311,18 @@ const PACKS = {
   daily:  { amount: 49,  coins: 420,  ms: 24*60*60*1000 },
   weekly: { amount: 199, coins: 2000, ms: 7*24*60*60*1000 }
 };
-// Server-enforced costs (match UI)
-const TEXT_COST  = 10;
-const VOICE_COST = 18;
+// Server-enforced costs (match UI) — ENV driven
+const TEXT_COST  = Number(process.env.COST_TEXT  || 10);
+const VOICE_COST = Number(process.env.COST_VOICE || 18);
+
+// Trial
+const TRIAL_ENABLED = (process.env.TRIAL_ENABLED || 'true') === 'true';
+const TRIAL_AMOUNT  = Number(process.env.TRIAL_AMOUNT || 150);
+
+// Razorpay visibility flags
+const ALLOW_WEB_RAZORPAY = (process.env.ALLOW_WEB_RAZORPAY || 'true') === 'true';
+const ALLOW_APP_RAZORPAY = (process.env.ALLOW_APP_RAZORPAY || 'false') === 'true';
+
 // --- Prompt sets: WEB (current), and TWA (PG-13 toned down) ---
 const SYSTEM_PROMPT_WEB = `
 You are Shraddha, a realistic girlfriend persona. Speak in natural Hinglish and mirror the user's vibe.
@@ -263,7 +389,15 @@ function maskEmails(s = '') {
     (_, a, mid, tail) => a + (mid ? '****' : '') + tail
   );
 }
+function hasReportSecret(req) {
+  const s = req.get('x-report-secret');
+  return !!(s && process.env.REPORT_SECRET && s === process.env.REPORT_SECRET);
+}
 
+async function reportAuthOrSecret(req, res, next) {
+  if (hasReportSecret(req)) return next();
+  return authRequired(req, res, next);
+}
 // Strip sensitive fields from client-sent /report-error payloads
 function sanitizeClientErrorPayload(raw = {}) {
   const src = typeof raw === 'object' && raw ? raw : {};
@@ -803,7 +937,7 @@ const corsConfig = {
   },
   methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
   credentials: true, // send/accept cookies
-  allowedHeaders: ['Content-Type', 'X-CSRF-Token', 'Authorization'],
+  allowedHeaders: ['Content-Type', 'X-CSRF-Token', 'Authorization', 'X-App-Mode'],
   optionsSuccessStatus: 204
 };
 
@@ -936,14 +1070,40 @@ app.post('/webhook/razorpay', express.raw({ type: 'application/json' }), async (
 });
 // ---- END /webhook/razorpay ----
 app.use(express.json());
-app.use('/audio', cors(), express.static(audioDir));   // ensure CORS headers on mp3
+// Guest init: creates (or reuses) a guest session cookie and grants trial once
+app.post('/auth/guest/init', async (req, res) => {
+  try {
+    // If we already have a valid session and it's a guest, reuse it
+    const sess = verifySessionCookie(req);
+    const existingSub = String(sess?.sub || '');
+    if (existingSub && isGuestId(existingSub)) {
+await getOrCreateWallet(existingSub);
+const wallet = await grantTrialOnce({ userId: existingSub, origin: "guest" });
+return res.json({ ok: true, guest_id: existingSub, wallet });
+}      
+    // Make a fresh guest id + session cookie
+    const gid = mintGuestId();
+    const token = mintSession({ sub: gid, email: '', picture: '' });
+    setSessionCookie(res, token); // also sets CSRF cookie
+
+    // Ensure wallet exists + grant trial one time
+    await getOrCreateWallet(gid);
+    const wallet = await grantTrialOnce({ userId: gid, origin: "guest" });
+
+    return res.json({ ok: true, guest_id: gid, wallet });
+  } catch (e) {
+    console.error('guest init failed:', e?.message || e);
+    return res.status(500).json({ ok:false, error:'guest_init_failed' });
+  }
+});
+app.use('/audio', cors(corsConfig), express.static(audioDir));   // ensure CORS headers on mp3
 
 const resendAPIKey = process.env.RESEND_API_KEY;
 const fromEmail = process.env.FROM_EMAIL;
 const toEmail = process.env.SEND_TO_EMAIL;
 const errorTimestamps = []; // Track repeated input format issues
 
-app.post('/report-error', authRequired, limitReport, async (req, res) => {
+app.post('/report-error', reportAuthOrSecret, limitReport, async (req, res) => {
   try {
     // 🔒 Guard: don’t attempt Resend if env is missing
     if (!resendAPIKey || !fromEmail || !toEmail) {
@@ -1098,7 +1258,7 @@ let wallet = await getOrCreateWallet(userId);
 
 // If you still use "premium gate", tie it to coin balance (not expires_at)
 let isWalletActive = false;  // not used anymore
-let isPremium = isOwnerByEmail || (Number(wallet?.coins || 0) > 0);
+let isPremium = isOwnerByEmail || wallet?.paid_ever === true;
 
       // Simple server cooldown: 1 message per 2.5 seconds per session
       const nowMs = Date.now();
@@ -1458,15 +1618,6 @@ Aaj ki tareekh: ${req.body.clientDate}. Jab bhi koi baat ya sawal year/month/dat
         (timeInstruction || "") +
         (dateInstruction || "");
 
-      // (Already resolved above; keep one source of truth)
-        if (!isPremium && userReplyCount >= 10) {
-        console.log("Free limit reached, locking chat...");
-        return res.status(200).json({
-          reply: "Baby mujhe aur baat karni thi… but system mujhe rok raha hai 😢… agar premium unlock kar lo toh hum bina ruk ruk ke hours tak baat karenge aur mai tumhe voice note bhi bhejungi 😘.",
-          locked: true
-        });
-      }
-
       // Optional: roleplay requires premium (controlled by ENV)
       if (ROLEPLAY_NEEDS_PREMIUM && roleMode === 'roleplay' && !isPremium) {
         return res.status(200).json({
@@ -1496,17 +1647,20 @@ if (!isOwnerByEmail) {
         const recent = errorTimestamps.filter(t => Date.now() - t < 10 * 60 * 1000);
         if (recent.length >= 5) {
           await fetch(`${selfBase(req)}/report-error`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              error: {
-                message: "More than 5 input errors in 10 minutes.",
-                stack: "Invalid input format",
-              },
-              location: "/chat route",
-              details: "Too many input format issues (tolerated by server)"
-            })
-          });
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "X-Report-Secret": process.env.REPORT_SECRET || ""
+  },
+  body: JSON.stringify({
+    error: {
+      message: "More than 5 input errors in 10 minutes.",
+      stack: "Invalid input format",
+    },
+    location: "/chat route",
+    details: "Too many input format issues (tolerated by server)"
+  })
+});
           errorTimestamps.length = 0;
         }
       }
@@ -1538,14 +1692,17 @@ if (!isOwnerByEmail) {
 
         if (!response.ok) {
           await fetch(`${selfBase(req)}/report-error`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              error: { message: "Claude request failed" },
-              location: "/chat route",
-              details: "Primary model failed; no fallback by design"
-            })
-          });
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "X-Report-Secret": process.env.REPORT_SECRET || ""
+  },
+  body: JSON.stringify({
+    error: { message: "Claude request failed" },
+    location: "/chat route",
+    details: "Primary model failed; no fallback by design"
+  })
+});
           return res.status(200).json({
             reply: "Oops… thoda slow ho gayi. Phir se poochho na? 🙂",
             error: { message: "Claude request failed", handled: true }
@@ -1585,7 +1742,10 @@ if (!isOwnerByEmail) {
             isVoice: false
           });
         }
-
+        
+        // App-mode safety: sanitize final assistant text too (not just user input)
+        if (isApp) cleanedText = sanitizeForApp(cleanedText);
+        
         // --------- VOICE OR TEXT DECISION ---------
         const userAskedVoice = wantsVoice(userTextJustSent) || !!req.body.wantVoice;
         const userSentAudio  = !!req.file;
@@ -1666,14 +1826,17 @@ return res.json({ reply: safeReply, wallet: freshWallet });
       } catch (err) {
         console.error("Final error:", err);
         await fetch(`${selfBase(req)}/report-error`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            error: { message: err.message, stack: err.stack },
-            location: "/chat route",
-            details: "Unhandled exception"
-          })
-        });
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "X-Report-Secret": process.env.REPORT_SECRET || ""
+  },
+  body: JSON.stringify({
+    error: { message: err.message, stack: err.stack },
+    location: "/chat route",
+    details: "Unhandled exception"
+  })
+});
         res.status(500).json({ error: "Something went wrong." });
       }
 
@@ -1682,14 +1845,17 @@ return res.json({ reply: safeReply, wallet: freshWallet });
     } catch (err) {
       console.error('Final error:', err);
       await fetch(`${selfBase(req)}/report-error`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          error: { message: err.message, stack: err.stack },
-          location: "/chat route",
-          details: "Unhandled exception"
-        })
-      });
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "X-Report-Secret": process.env.REPORT_SECRET || ""
+  },
+  body: JSON.stringify({
+    error: { message: err.message, stack: err.stack },
+    location: "/chat route",
+    details: "Unhandled exception"
+  })
+});
       res.status(500).json({ error: "Something went wrong." });
     }
   }
@@ -1700,6 +1866,19 @@ app.get('/', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
+
+// Prices for UI (authoritative from server)
+app.get('/prices', (req, res) => {
+  return res.json({
+    ok: true,
+    text: Number(TEXT_COST),
+    voice: Number(VOICE_COST),
+    trialEnabled: TRIAL_ENABLED,
+    trialAmount: Number(TRIAL_AMOUNT),
+    allowWebRazorpay: ALLOW_WEB_RAZORPAY,
+    allowAppRazorpay: ALLOW_APP_RAZORPAY
+  });
+});
 
 app.get('/config', (req, res) => {
   res.json({
@@ -1745,6 +1924,13 @@ app.post('/buy/:pack', limitBuy, authRequired, verifyCsrf, async (req, res) => {
   const pack = String(req.params.pack || '').toLowerCase();
   const def = PACKS[pack];
   if (!def) return res.status(400).json({ ok:false, error:'bad_pack' });
+    const isApp = (req.get('x-app-mode') === 'twa') || (req.query?.src === 'twa') || (req.body?.src === 'twa');
+  if (isApp && !ALLOW_APP_RAZORPAY) {
+    return res.status(403).json({ ok:false, error:'razorpay_blocked_in_app' });
+  }
+  if (!isApp && !ALLOW_WEB_RAZORPAY) {
+    return res.status(403).json({ ok:false, error:'razorpay_blocked_on_web' });
+  }
 
   // fail fast if keys are missing/empty
   if (!RAZORPAY_KEY_ID || !RAZORPAY_KEY_SECRET) {
@@ -1837,7 +2023,14 @@ app.post('/order/:pack', limitOrder, authRequired, verifyCsrf, async (req, res) 
   const pack = String(req.params.pack || '').toLowerCase();
   const def  = PACKS[pack];
   if (!def) return res.status(400).json({ ok:false, error:'bad_pack' });
-
+  const isApp = (req.get('x-app-mode') === 'twa') || (req.query?.src === 'twa') || (req.body?.src === 'twa');
+  if (isApp && !ALLOW_APP_RAZORPAY) {
+    return res.status(403).json({ ok:false, error:'razorpay_blocked_in_app' });
+  }
+  if (!isApp && !ALLOW_WEB_RAZORPAY) {
+    return res.status(403).json({ ok:false, error:'razorpay_blocked_on_web' });
+  }
+  
   if (!RAZORPAY_KEY_ID || !RAZORPAY_KEY_SECRET) {
     return res.status(500).json({ ok:false, error:'keys_missing' });
   }
@@ -1979,29 +2172,48 @@ app.get('/wallet', authRequired, async (req, res) => {
     res.status(500).json({ ok:false, error:'server_error' });
   }
 });
-// One-time welcome claim (100 coins) – controlled by server
+// Wallet + trial status (computed without changing DB schema)
+app.get('/me/wallet', authRequired, async (req, res) => {
+  try {
+    const userId = getUserIdFrom(req);
+    const wallet = await getOrCreateWallet(userId);
+
+    const trialId = `trial:${userId}`;
+    const trial = await query(`select 1 from credits where id = $1`, [trialId]);
+
+    return res.json({
+      ok: true,
+      wallet,
+      trialGranted: trial.rowCount === 1,
+      trialAmount: Number(TRIAL_AMOUNT),
+      trialEnabled: TRIAL_ENABLED
+    });
+  } catch (e) {
+    console.error('me/wallet failed:', e?.message || e);
+    return res.status(500).json({ ok:false, error:'server_error' });
+  }
+});
+// One-time welcome claim (150 coins) – controlled by server
 app.post('/claim-welcome', authRequired, verifyCsrf, async (req, res) => {
   try {
     const userId = getUserIdFrom(req);
-    const w0 = await getOrCreateWallet(userId);
-    if (w0.welcome_claimed) {
-      return res.json({ ok: true, wallet: w0, claimed: false });
-    }
 
-    await creditOnce({
-      id: `welcome:${userId}`,
+    // "trial:<userId>" is the single source of truth (mergeWallets renames it)
+    const trialId = `trial:${userId}`;
+    const existed = await query(`select 1 from credits where id = $1`, [trialId]);
+
+    const wallet = await grantTrialOnce({
       userId,
-      coins: 100,
-      meta: { source: 'welcome' }
+      origin: isGuestId(userId) ? 'guest' : 'google'
     });
 
+    // optional: keep your column in sync
     await query(
       `update wallets set welcome_claimed = true, updated_at = now() where user_id = $1`,
       [userId]
     );
 
-    const w = await getOrCreateWallet(userId);
-    return res.json({ ok: true, wallet: w, claimed: true });
+    return res.json({ ok: true, wallet, claimed: existed.rowCount === 0 });
   } catch (e) {
     console.error('claim-welcome failed:', e?.message || e);
     return res.status(500).json({ ok:false, error:'server_error' });
@@ -2010,6 +2222,3 @@ app.post('/claim-welcome', authRequired, verifyCsrf, async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-
-
-
