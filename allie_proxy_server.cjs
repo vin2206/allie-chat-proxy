@@ -467,6 +467,7 @@ const feedbackUpload = multer({
     cb(ok ? null : new Error('bad_type'), ok);
   }
 });
+
 // Whisper STT function
 async function transcribeWithWhisper(audioPath) {
   const form = new FormData();
@@ -2222,3 +2223,4 @@ app.post('/claim-welcome', authRequired, verifyCsrf, async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
