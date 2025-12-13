@@ -938,7 +938,7 @@ const corsConfig = {
   },
   methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
   credentials: true, // send/accept cookies
-  allowedHeaders: ['Content-Type', 'X-CSRF-Token', 'Authorization', 'X-App-Mode'],
+  allowedHeaders: ['Content-Type', 'X-CSRF-Token', 'Authorization', 'X-App-Mode', 'X-Guest-Id'],
   optionsSuccessStatus: 204
 };
 
@@ -2223,4 +2223,5 @@ app.post('/claim-welcome', authRequired, verifyCsrf, async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
