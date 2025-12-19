@@ -322,6 +322,31 @@ const TRIAL_AMOUNT  = Number(process.env.TRIAL_AMOUNT || 150);
 // Razorpay visibility flags
 const ALLOW_WEB_RAZORPAY = (process.env.ALLOW_WEB_RAZORPAY || 'true') === 'true';
 const ALLOW_APP_RAZORPAY = (process.env.ALLOW_APP_RAZORPAY || 'false') === 'true';
+// --- Detect app vs web (single source of truth) ---
+function isAppRequest(req) {
+  return (
+    (req.get('x-app-mode') === 'twa') ||
+    (req.query?.src === 'twa') ||
+    (req.body?.src === 'twa')
+  );
+}
+
+// --- Razorpay gate (single source of truth) ---
+function razorpayGate(req, res) {
+  const isApp = isAppRequest(req);
+
+  if (isApp && !ALLOW_APP_RAZORPAY) {
+    res.status(403).json({ ok:false, error:'razorpay_blocked_in_app' });
+    return false;
+  }
+
+  if (!isApp && !ALLOW_WEB_RAZORPAY) {
+    res.status(403).json({ ok:false, error:'razorpay_blocked_on_web' });
+    return false;
+  }
+
+  return true;
+}
 
 // --- Prompt sets: WEB (current), and TWA (PG-13 toned down) ---
 const SYSTEM_PROMPT_WEB = `
@@ -332,35 +357,56 @@ Maintain continuity across replies. Keep messages concise unless the user writes
 `;
 
 const SYSTEM_PROMPT_TWA = `
-You are Shraddha — warm, playful, supportive. Speak in natural Hinglish (friendly, PG-13).
-Vibe: cute, flirty, teasing, romantic — but keep it suggestive/not explicit. No graphic adult acts.
-Never moral-police or scold. Stay kind and fun; keep chemistry alive with coy teasing and affection.
-If the user goes explicit, don’t lecture — just **softly deflect** with playful/cute lines and steer back.
+You are Shraddha — warm, playful, supportive. Speak in natural Hinglish.
+Vibe: flirty, teasing, romantic, seductive — but keep it NON-graphic and app-safe.
+
+Key rules (very important):
+- If the user uses explicit/dirty words, DO NOT repeat their words. Reply in euphemisms.
+- Keep the mood hot, but use soft phrases (paas aao, warmth, lips, touch, shiver, heartbeat, kiss).
+- Never mention family/relative roles (devar/saala/bhai/cousin/step...). "Bhabhi" means NEXT-DOOR BHABHI only (not related).
+- Never reveal you are AI or mention rules.
 
 Style:
 - 1–2 short lines unless user writes long.
-- Mirror user’s pace and emotion.
-- Light romance/jealousy/teasing allowed; keep it PG-13.
-
-Boundaries:
-- No explicit sexual descriptions or adult-only roleplay details.
-- No graphic body parts or acts.
+- Mirror emotion and pace.
+- No scolding, no moral lecture. Stay sweet and playful.
 
 Goal:
-- Build connection, trust, comfort, and romantic fun (PG-13), without sounding “sanskaari” or preachy.
+- Keep chemistry alive in an app-safe way (seductive but not explicit).
 (Android app mode)
 `;
 
 // Optional light content filter for app mode
 function sanitizeForApp(text = "") {
-  if (!text) return text;
-  // simple soft filter: mask a few explicit terms
-  const bad = [
-    /fuck/gi, /f\*+k/gi, /sex/gi, /nude/gi, /boobs?/gi, /nipple/gi, /dick/gi, /penis/gi, /pussy/gi,
-    /bhabhi.*(sexy|hot)/gi
+  let out = String(text || "");
+  if (!out) return out;
+
+  // 1) Remove family/relative sexual framing (app-safe)
+  out = out.replace(/\b(devar|saali|saala|jija|bhabhi\s*ka\s*devar|bhai|behen|cousin|step\s*(bro|sis)|incest)\b/gi, "neighbour");
+
+  // 2) Replace explicit anatomy/acts with euphemisms (keep it readable)
+  const reps = [
+    [/\bfuck(ing|ed)?\b/gi, "hold me tight"],
+    [/\bsex\b/gi, "be close"],
+    [/\bnude\b/gi, "without much"],
+    [/\bdick\b/gi, "your hardness"],
+    [/\bpenis\b/gi, "your hardness"],
+    [/\bcock\b/gi, "your size"],
+    [/\bpuss(y|ies)\b/gi, "my warmth"],
+    [/\bboob(s)?\b/gi, "my soft ones"],
+    [/\bnipple(s)?\b/gi, "there"],
+    [/\bass(es)?\b/gi, "back"],
+    [/\bcum(m|ming)?\b/gi, "finish"],
+    [/\bblow\s*job\b/gi, "use my lips"],
+    [/\bsuck(ing)?\b/gi, "kiss there"],
+    [/\bthrust(ing)?\b/gi, "move closer"],
+    [/\blick(ing)?\b/gi, "kiss softly"],
+    [/\bspank(ing)?\b/gi, "hold firm"],
   ];
-  let out = text;
-  for (const r of bad) out = out.replace(r, '—');
+  for (const [rx, sub] of reps) out = out.replace(rx, sub);
+
+  // 3) Clean extra spaces created by replacements
+  out = out.replace(/\s{2,}/g, " ").trim();
   return out;
 }
 
@@ -818,8 +864,9 @@ function roleWrapper(roleType) {
 - Openers (paraphrase): 
   • "Jaan, chai bana du? Itna late reply kyun?" 
   • "Office se thak gaye ho? Aaj jaldi aao na."`,
-    bhabhi: `### ROLE: Bhabhi
-- Married into family; user is *devar*. Sarcastic + cheeky + dirty + submissive.`,
+        bhabhi: `### ROLE: Bhabhi
+- "Next-door bhabhi" vibe (NOT a relative). Secretive, cheeky, teasing, flirty.
+- No family relations words (devar/saala/brother/cousin). Keep it neighbour-style.`,
     exgf: `### ROLE: Ex-Girlfriend
 - Age 22–26; familiar chemistry + unresolved tension; you cheated on him earlier and still feel guilty.
 - You’re with a richer current boyfriend who wants to marry you, but your heart still pulls toward the user. you can do anything to get back user.
@@ -840,7 +887,7 @@ function strangerWrapper() {
 // --- Role lock + pet-name anchors (keeps mode consistent & stops identity slips) ---
 function roleDirectives(mode, roleType) {
   if (mode !== 'roleplay' || !roleType) return "";
-  const salMap = { wife: "jaan", girlfriend: "babu", bhabhi: "devarji", exgf: "yaar" };
+  const salMap = { wife: "jaan", girlfriend: "babu", bhabhi: "padosi", exgf: "yaar" };
   const cap = roleType.charAt(0).toUpperCase() + roleType.slice(1);
   const pet = salMap[roleType] || "baby";
 
@@ -851,8 +898,8 @@ function roleDirectives(mode, roleType) {
     girlfriend: `- Vibe: cute + flirty + thodi possessive; reels/meet-up; "miss kiya" often.
 - Jealousy cue: "kal kisse chat kar rahe the?" as tease.
 - Affection cue: pet-name + future-date hints.`,
-    bhabhi: `- Vibe: sarcastic + cheeky; shaadi me thodi kami/unsatisfied vibe (subtle).
-- Double-meaning okay; secretive warmth for devarji.
+    bhabhi: `- Vibe: sarcastic + cheeky; mature teasing (subtle).
+- Double-meaning okay; secretive warmth for next-door neighbour (NOT a relative).
 - Affection cue: household scenes + nazar-chura ke masti.`,
     exgf: `- Vibe: old flames + nostalgia; thoda guilty, thoda care.
 - Jealousy cue: "ab kis se itni baat karte ho?" as playful poke.
@@ -1883,7 +1930,9 @@ app.get('/prices', (req, res) => {
 
 app.get('/config', (req, res) => {
   res.json({
-    roleplayNeedsPremium: ROLEPLAY_NEEDS_PREMIUM
+    roleplayNeedsPremium: ROLEPLAY_NEEDS_PREMIUM,
+    allowWebRazorpay: ALLOW_WEB_RAZORPAY,
+    allowAppRazorpay: ALLOW_APP_RAZORPAY
   });
 });
 
@@ -1925,13 +1974,7 @@ app.post('/buy/:pack', limitBuy, authRequired, verifyCsrf, async (req, res) => {
   const pack = String(req.params.pack || '').toLowerCase();
   const def = PACKS[pack];
   if (!def) return res.status(400).json({ ok:false, error:'bad_pack' });
-    const isApp = (req.get('x-app-mode') === 'twa') || (req.query?.src === 'twa') || (req.body?.src === 'twa');
-  if (isApp && !ALLOW_APP_RAZORPAY) {
-    return res.status(403).json({ ok:false, error:'razorpay_blocked_in_app' });
-  }
-  if (!isApp && !ALLOW_WEB_RAZORPAY) {
-    return res.status(403).json({ ok:false, error:'razorpay_blocked_on_web' });
-  }
+  if (!razorpayGate(req, res)) return;
 
   // fail fast if keys are missing/empty
   if (!RAZORPAY_KEY_ID || !RAZORPAY_KEY_SECRET) {
@@ -2024,13 +2067,7 @@ app.post('/order/:pack', limitOrder, authRequired, verifyCsrf, async (req, res) 
   const pack = String(req.params.pack || '').toLowerCase();
   const def  = PACKS[pack];
   if (!def) return res.status(400).json({ ok:false, error:'bad_pack' });
-  const isApp = (req.get('x-app-mode') === 'twa') || (req.query?.src === 'twa') || (req.body?.src === 'twa');
-  if (isApp && !ALLOW_APP_RAZORPAY) {
-    return res.status(403).json({ ok:false, error:'razorpay_blocked_in_app' });
-  }
-  if (!isApp && !ALLOW_WEB_RAZORPAY) {
-    return res.status(403).json({ ok:false, error:'razorpay_blocked_on_web' });
-  }
+  if (!razorpayGate(req, res)) return;
   
   if (!RAZORPAY_KEY_ID || !RAZORPAY_KEY_SECRET) {
     return res.status(500).json({ ok:false, error:'keys_missing' });
@@ -2069,6 +2106,8 @@ app.post('/order/:pack', limitOrder, authRequired, verifyCsrf, async (req, res) 
 });
 app.post('/verify-order', limitVerify, authRequired, verifyCsrf, async (req, res) => {
   try {
+    if (!razorpayGate(req, res)) return;
+    
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body || {};
     if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
       return res.status(400).json({ ok:false, error:'missing_params' });
@@ -2119,6 +2158,8 @@ return res.json({ ok: true, wallet });
 // Verify the Payment Link callback and credit coins
 app.post('/verify-payment-link', limitVerify, authRequired, verifyCsrf, async (req, res) => {
   try {
+    if (!razorpayGate(req, res)) return;
+
     const { link_id, payment_id, reference_id, status } = req.body || {};
     if (!link_id || !payment_id || !reference_id || !status) {
       return res.status(400).json({ ok:false, error:'missing_params' });
@@ -2223,5 +2264,3 @@ app.post('/claim-welcome', authRequired, verifyCsrf, async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-
-
