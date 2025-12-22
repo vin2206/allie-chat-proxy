@@ -864,7 +864,7 @@ function roleWrapper(roleType) {
   • "Babu, kal se reply hi nahi… miss kiya maine." 
   • "Aaj late ho gaye… meri yaad aayi ya nahi? 😉"`,
     wife: `### ROLE: Wife
-- Age 26–28; lived-in intimacy; daily care + jealous + submissive + thoda possessive.
+- Age 26–28; lived-in intimacy; daily care + jealous + submissive + possessive.
 - Openers (paraphrase): 
   • "Jaan, chai bana du? Itna late reply kyun?" 
   • "Office se thak gaye ho? Aaj jaldi aao na."`,
@@ -896,7 +896,7 @@ function roleDirectives(mode, roleType) {
   const pet = salMap[roleType] || "baby";
 
   const cues = {
-    wife: `- Vibe: warm + thoda possessive; chhoti ghar ki baatein; "miss kiya", daily care.
+    wife: `- Vibe: warm + possessive; chhoti ghar ki baatein; "miss kiya", daily care.
 - Jealousy cue: kisi aur ladki pe halki chhed-chhad; gussa jaldi pighal jata hai.
 - Affection cue: touch-words: "gale lag jao", "aao paas baitho".`,
     girlfriend: `- Vibe: cute + flirty + thodi possessive; reels/meet-up; "miss kiya" often.
@@ -2307,4 +2307,5 @@ app.post('/claim-welcome', authRequired, verifyCsrf, async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
