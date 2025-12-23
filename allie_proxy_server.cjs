@@ -78,8 +78,12 @@ const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
 // --- First-party rolling session (httpOnly cookie) ---
 const SESSION_SECRET = process.env.SESSION_SECRET || 'change-me-in-env';
 const SESSION_COOKIE = 'bb_sess';
-const SESSION_TTL_MS = 90 * 24 * 60 * 60 * 1000;          // 90 days
-const SESSION_ROLLING_THRESHOLD_MS = 14 * 24 * 60 * 60 * 1000; // renew when <14 days left
+
+// ✅ 14-day rolling session (inactive 14 days => logout)
+const SESSION_TTL_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
+
+// ✅ renew only when close to expiry (avoid renewing on every request)
+const SESSION_ROLLING_THRESHOLD_MS = 2 * 24 * 60 * 60 * 1000; // <2 days left
 // --- CSRF (double-submit) ---
 const CSRF_COOKIE = 'bb_csrf';
 function mintCsrf() { return crypto.randomBytes(32).toString('hex'); }
@@ -99,7 +103,10 @@ function verifyCsrf(req, res, next) {
 
   // ✅ If the client sent a Google ID token, let it pass (we still run authRequired)
   const hasBearer = /^Bearer\s+.+/i.test(req.get('authorization') || '');
-  if (hasBearer) return next();
+  const hasCookieSession = !!req.cookies?.[SESSION_COOKIE];
+
+// Only bypass CSRF when it’s truly token-auth only (no cookie session)
+if (hasBearer && !hasCookieSession) return next();
 
   const hdr  = req.get('x-csrf-token');
   const cook = req.cookies?.[CSRF_COOKIE];
@@ -221,6 +228,24 @@ async function mergeWallets({ fromUserId, toUserId }) {
         [toUserId, fromCoins]
       );
     }
+    // ✅ carry over premium flags (paid_ever / first_paid_date)
+const fromPaid = !!from?.paid_ever;
+const fromDate = from?.first_paid_date || null;
+
+if (fromPaid || fromDate) {
+  await query(
+    `update wallets
+        set paid_ever = (paid_ever OR $2),
+            first_paid_date = case
+              when first_paid_date is null then $3
+              when $3 is null then first_paid_date
+              else least(first_paid_date, $3)
+            end,
+            updated_at = now()
+      where user_id = $1`,
+    [toUserId, fromPaid, fromDate]
+  );
+}
 
     // move ledger/credits history so trial/purchases follow the user
     await query(`update credits set user_id = $2 where user_id = $1`, [fromUserId, toUserId]);
@@ -249,42 +274,59 @@ if (!toHasTrial.rowCount) {
 }
 
 async function authRequired(req, res, next) {
-  // ✅ If a Bearer token is present, ALWAYS prefer it (so guest -> google upgrade works)
-  if (hasBearerToken(req)) {
-    try {
-      const m = (req.get('authorization') || '').match(/^Bearer\s+(.+)$/i);
-      const idToken = m && m[1];
-      const verified = await verifyGoogleToken(idToken);
-
-      // If we previously had a guest session cookie, merge guest wallet -> google wallet
-      const oldSess = verifySessionCookie(req);
-      const oldSub = String(oldSess?.sub || '');
-      const newSub = String(verified?.sub || '').toLowerCase();
-
-      if (oldSub && isGuestId(oldSub) && newSub) {
-        await mergeWallets({ fromUserId: oldSub, toUserId: newSub });
-      }
-
-      req.user = verified;
-
-      // Mint first-party session for next requests
-      const token = mintSession(verified);
-      setSessionCookie(res, token);
-
-      return next();
-    } catch (e) {
-      return res.status(401).json({ ok:false, error:'auth_required' });
-    }
-  }
-
-  // 1) Try our own rolling session cookie (guest or google)
+  // 1) Try our own rolling session cookie FIRST (guest or google)
   const sess = verifySessionCookie(req);
+
+  // ✅ If cookie exists, it should win — even if Authorization: Bearer is present/expired
   if (sess?.sub || sess?.email) {
-    req.user = {
+    const cookieUser = {
       email: String(sess.email || '').toLowerCase(),
       sub: String(sess.sub || ''),
       picture: sess.picture || ''
     };
+
+    // ✅ Special case: user is currently a GUEST (cookie), but also sent Bearer token
+    // This is the "upgrade guest -> google" path.
+    // - If Bearer is valid => merge guest wallet into google, mint google cookie
+    // - If Bearer is invalid/expired => IGNORE it, keep guest logged in via cookie
+    const hasBearer = hasBearerToken(req);
+    if (hasBearer && isGuestId(cookieUser.sub)) {
+      try {
+        const m = (req.get('authorization') || '').match(/^Bearer\s+(.+)$/i);
+        const idToken = m && m[1];
+        const verified = await verifyGoogleToken(idToken);
+
+        const oldSub = String(cookieUser.sub || '');
+        const newSub = String(verified?.sub || '').toLowerCase();
+
+        if (oldSub && isGuestId(oldSub) && newSub) {
+          await mergeWallets({ fromUserId: oldSub, toUserId: newSub });
+        }
+
+        // Switch identity to Google
+        req.user = verified;
+
+        // Mint first-party session for next requests (Google session)
+        const token = mintSession(verified);
+        setSessionCookie(res, token);
+
+        return next();
+      } catch (e) {
+        // Bearer failed => stay logged in via cookie session
+        req.user = cookieUser;
+
+        // Rolling renewal
+        const msLeft = (sess.exp * 1000) - Date.now();
+        if (msLeft < SESSION_ROLLING_THRESHOLD_MS) {
+          const fresh = mintSession(req.user);
+          setSessionCookie(res, fresh);
+        }
+        return next();
+      }
+    }
+
+    // Normal cookie session path (google or guest)
+    req.user = cookieUser;
 
     // Rolling renewal
     const msLeft = (sess.exp * 1000) - Date.now();
@@ -295,9 +337,27 @@ async function authRequired(req, res, next) {
     return next();
   }
 
+  // 2) No cookie => allow Bearer login to create the cookie session
+  if (hasBearerToken(req)) {
+    try {
+      const m = (req.get('authorization') || '').match(/^Bearer\s+(.+)$/i);
+      const idToken = m && m[1];
+      const verified = await verifyGoogleToken(idToken);
+
+      req.user = verified;
+
+      // Mint first-party session cookie for next requests
+      const token = mintSession(verified);
+      setSessionCookie(res, token);
+
+      return next();
+    } catch (e) {
+      return res.status(401).json({ ok:false, error:'auth_required' });
+    }
+  }
+
   return res.status(401).json({ ok:false, error:'auth_required' });
 }
-
 const path = require('path');
 const multer = require('multer');
 const FormData = require('form-data');
@@ -473,12 +533,18 @@ function sanitizeClientErrorPayload(raw = {}) {
 }
 
 // 👇 ADD THESE TWO HELPERS HERE (used by /buy, /order, webhooks, verifiers)
-function makeRef(userId, pack) {
-  return `${pack}|${userId}`;
+function makeRef(userId, pack, nonce = "") {
+  // If nonce is present -> pack|userId|nonce (unique for payment links)
+  // Else -> pack|userId (stable, fine for orders)
+  return nonce ? `${pack}|${userId}|${nonce}` : `${pack}|${userId}`;
 }
+
 function parseRef(ref) {
-  const [pack, userId] = String(ref || '').split('|');
-  return { pack, userId };
+  // Works for BOTH:
+  // - pack|userId
+  // - pack|userId|anything...
+  const parts = String(ref || '').split('|');
+  return { pack: parts[0], userId: parts[1] };
 }
 function getUserIdFrom(req) {
   const sub   = String(req.user?.sub || '').toLowerCase();
@@ -1129,6 +1195,22 @@ app.post('/webhook/razorpay', express.raw({ type: 'application/json' }), async (
 });
 // ---- END /webhook/razorpay ----
 app.use(express.json());
+// Session check: tells frontend if cookie session is alive (14-day rolling)
+app.get('/auth/session', authRequired, (req, res) => {
+  return res.json({
+    ok: true,
+    user: {
+      sub: String(req.user?.sub || ''),
+      email: String(req.user?.email || ''),
+      picture: String(req.user?.picture || '')
+    }
+  });
+});
+app.post('/auth/logout', (req, res) => {
+  res.clearCookie(SESSION_COOKIE, { domain: '.buddyby.com', path: '/' });
+  res.clearCookie(CSRF_COOKIE, { domain: '.buddyby.com', path: '/' });
+  return res.json({ ok: true });
+});
 // Guest init: creates (or reuses) a guest session cookie and grants trial once
 app.post('/auth/guest/init', async (req, res) => {
   try {
@@ -1298,7 +1380,7 @@ app.post(
       let userMessage = null;
       let audioPath = null;
       // Detect the Android app (TWA) either by header from chat.jsx or query ?src=twa
-      const isApp = (req.get('x-app-mode') === 'twa') || (req.query?.src === 'twa');
+      const isApp = isAppRequest(req);
 
       // ===== BEGIN: your full chat logic moved inside the handler =====
 
@@ -2028,82 +2110,69 @@ app.post('/buy/:pack', limitBuy, authRequired, verifyCsrf, async (req, res) => {
   const userEmail = String(req.body?.userEmail || '').toLowerCase();
   const returnUrl = String(req.body?.returnUrl || `${FRONTEND_URL}/payment/thanks`);
 
-  try {
-    const payload = {
-  amount: def.amount * 100,  // paise
-  currency: 'INR',
-  accept_partial: false,
-  description: `Shraddha ${pack} pack for ${userEmail || userId}`,
-  customer: userEmail ? { email: userEmail } : undefined,
-  notify: { sms: false, email: RZP_NOTIFY_EMAIL && !!userEmail },
-  reference_id: makeRef(userId, pack),
-  callback_url: returnUrl,
-  callback_method: 'get',
-  reminder_enable: false,
-  notes: { pack, userId },
-  // ⏱️ auto-expire stale links so they can't be reused later
-  expire_by: Math.floor(Date.now() / 1000) + ORDER_TTL_SEC
-};
+  // ✅ unique ref for payment links
+  const uniqueRef = makeRef(
+    userId,
+    pack,
+    `pl_${Date.now().toString(36)}_${crypto.randomBytes(4).toString('hex')}`
+  );
 
+  // ✅ build payload OUTSIDE try so catch can reuse it
+  const payload = {
+    amount: def.amount * 100,  // paise
+    currency: 'INR',
+    accept_partial: false,
+    description: `Shraddha ${pack} pack for ${userEmail || userId}`,
+    customer: userEmail ? { email: userEmail } : undefined,
+    notify: { sms: false, email: RZP_NOTIFY_EMAIL && !!userEmail },
+
+    // ✅ ONLY ONE reference_id and it is UNIQUE
+    reference_id: uniqueRef,
+
+    callback_url: returnUrl,
+    callback_method: 'get',
+    reminder_enable: false,
+    notes: { pack, userId },
+    expire_by: Math.floor(Date.now() / 1000) + ORDER_TTL_SEC
+  };
+
+  try {
     const r = await axios.post(
       'https://api.razorpay.com/v1/payment_links',
       payload,
       { auth: { username: RAZORPAY_KEY_ID, password: RAZORPAY_KEY_SECRET } }
     );
-
     return res.json({ ok:true, link_id: r.data.id, short_url: r.data.short_url });
+
   } catch (e) {
-  const details = e?.response?.data || { message: e.message };
-  const msg = (details?.error?.description || details?.message || '').toLowerCase();
-  const ref = makeRef(getUserIdFrom(req), pack);
+    const details = e?.response?.data || { message: e.message };
+    const msg = (details?.error?.description || details?.message || '').toLowerCase();
 
-  if (msg.includes('reference_id already exists')) {
-    try {
-      const list = await axios.get(
-        `https://api.razorpay.com/v1/payment_links?reference_id=${encodeURIComponent(ref)}`,
-        { auth: { username: RAZORPAY_KEY_ID, password: RAZORPAY_KEY_SECRET } }
-      );
-      const existing = list?.data?.items?.[0];
-if (existing) {
-  const nowSec = Math.floor(Date.now() / 1000);
-  const isFresh = (existing.status === 'created') &&
-                  (nowSec - (existing.created_at || nowSec) < ORDER_TTL_SEC);
-  if (isFresh) {
-    return res.json({ ok:true, link_id: existing.id, short_url: existing.short_url });
-  }
-  // Stale or already used → create a brand-new link (same response shape as normal path)
-  try {
-    const fresh = await axios.post(
-      'https://api.razorpay.com/v1/payment_links',
-      {
-        amount: def.amount * 100,
-        currency: 'INR',
-        accept_partial: false,
-        description: `Shraddha ${pack} pack for ${userEmail || userId}`,
-        customer: userEmail ? { email: userEmail } : undefined,
-        notify: { sms: false, email: RZP_NOTIFY_EMAIL && !!userEmail },
-        reference_id: makeRef(userId, pack),
-        callback_url: returnUrl,
-        callback_method: 'get',
-        reminder_enable: false,
-        notes: { pack, userId },
-        expire_by: Math.floor(Date.now() / 1000) + ORDER_TTL_SEC
-      },
-      { auth: { username: RAZORPAY_KEY_ID, password: RAZORPAY_KEY_SECRET } }
-    );
-    return res.json({ ok:true, link_id: fresh.data.id, short_url: fresh.data.short_url });
-  } catch (e3) {
-    console.error('recreate fresh payment_link failed:', safeErr(e3));
-  }
-}
-    } catch (e2) {
-      console.error('failed to fetch existing payment_link:', safeErr(e2));
+    // Retry ONCE with fresh unique reference_id (rare)
+    if (msg.includes('reference_id already exists')) {
+      try {
+        const retryRef = makeRef(
+          userId,
+          pack,
+          `pl_${Date.now().toString(36)}_${crypto.randomBytes(4).toString('hex')}`
+        );
+
+        const r2 = await axios.post(
+          'https://api.razorpay.com/v1/payment_links',
+          { ...payload, reference_id: retryRef },
+          { auth: { username: RAZORPAY_KEY_ID, password: RAZORPAY_KEY_SECRET } }
+        );
+
+        return res.json({ ok:true, link_id: r2.data.id, short_url: r2.data.short_url });
+
+      } catch (e2) {
+        console.error('retry create payment_link failed:', safeErr(e2));
+      }
     }
-  }
 
-  console.error('buy link create failed:', safeErr(details));
-  return res.status(500).json({ ok:false, error:'create_failed', details });
-}
+    console.error('buy link create failed:', safeErr(details));
+    return res.status(500).json({ ok:false, error:'create_failed', details });
+  }
 });
 // ======== DIRECT CHECKOUT (Orders API) ========
 app.post('/order/:pack', limitOrder, authRequired, verifyCsrf, async (req, res) => {
@@ -2307,5 +2376,3 @@ app.post('/claim-welcome', authRequired, verifyCsrf, async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-
-
