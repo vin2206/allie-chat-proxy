@@ -13,6 +13,137 @@ const fetch = global.fetch || ((...args) =>
 );
 // ===== WALLET DB (BEGIN) =====
 const { query } = require('./db.cjs');
+// ===== DELETE ACCOUNT (BEGIN) =====
+
+// Admin Basic Auth (set in Railway env)
+const ADMIN_USER = (process.env.ADMIN_USER || '').trim();
+const ADMIN_PASS = (process.env.ADMIN_PASS || '').trim();
+
+function timingSafeEq(a = '', b = '') {
+  const A = Buffer.from(String(a));
+  const B = Buffer.from(String(b));
+  if (A.length !== B.length) return false;
+  return crypto.timingSafeEqual(A, B);
+}
+
+function requireAdmin(req, res, next) {
+  // If not set, fail closed (do NOT expose admin endpoints)
+  if (!ADMIN_USER || !ADMIN_PASS) {
+    return res.status(500).send('Admin auth not configured');
+  }
+
+  const h = req.get('authorization') || '';
+  const m = h.match(/^Basic\s+(.+)$/i);
+  if (!m) {
+    res.setHeader('WWW-Authenticate', 'Basic realm="BuddyBy Admin"');
+    return res.status(401).send('Auth required');
+  }
+
+  const raw = Buffer.from(m[1], 'base64').toString('utf8');
+  const idx = raw.indexOf(':');
+  const user = idx >= 0 ? raw.slice(0, idx) : raw;
+  const pass = idx >= 0 ? raw.slice(idx + 1) : '';
+
+  if (!timingSafeEq(user, ADMIN_USER) || !timingSafeEq(pass, ADMIN_PASS)) {
+    res.setHeader('WWW-Authenticate', 'Basic realm="BuddyBy Admin"');
+    return res.status(401).send('Invalid credentials');
+  }
+  return next();
+}
+
+function makeRid() {
+  // Node 18+ supports crypto.randomUUID; fallback if needed
+  return (crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex'));
+}
+
+async function sendResendMail({ to, subject, html }) {
+  const resendAPIKey = process.env.RESEND_API_KEY;
+  const fromEmail = process.env.FROM_EMAIL || 'support@buddyby.com';
+
+  if (!resendAPIKey || !fromEmail || !to) {
+    throw new Error('mail_config_missing');
+  }
+
+  const r = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${resendAPIKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ from: fromEmail, to, subject, html })
+  });
+
+  if (!r.ok) {
+    const body = await r.text().catch(() => '');
+    console.error('Resend send failed:', body);
+    throw new Error('mail_send_failed');
+  }
+}
+
+async function createDeletionRequest({ userId, email, meta = {} }) {
+  const rid = makeRid();
+
+  await query(
+    `insert into deletion_requests (rid, user_id, email, status, meta)
+     values ($1,$2,$3,'PENDING',$4)`,
+    [rid, userId, email || null, meta]
+  );
+
+  return rid;
+}
+
+async function getDeletionRequest(rid) {
+  const { rows } = await query(
+    `select rid, user_id, email, status, created_at, deleted_at, meta
+       from deletion_requests
+      where rid = $1`,
+    [rid]
+  );
+  return rows[0] || null;
+}
+
+async function listPendingDeletionRequests(limit = 50) {
+  const { rows } = await query(
+    `select rid, user_id, email, status, created_at
+       from deletion_requests
+      where status = 'PENDING'
+      order by created_at desc
+      limit $1`,
+    [limit]
+  );
+  return rows;
+}
+
+// IMPORTANT: keep this minimal — only delete tables you are sure exist.
+// Right now, your backend definitely has: wallets, credits.
+// If you later add more user tables, extend this routine carefully.
+async function deleteUserDataNow(userId) {
+  if (!userId) throw new Error('userId required');
+
+  await query('begin');
+  try {
+    // delete ledger first, then wallet
+    await query(`delete from credits where user_id = $1`, [userId]);
+    await query(`delete from wallets where user_id = $1`, [userId]);
+
+    await query('commit');
+  } catch (e) {
+    await query('rollback');
+    throw e;
+  }
+}
+
+async function markDeletionDone(rid) {
+  await query(
+    `update deletion_requests
+        set status = 'DELETED',
+            deleted_at = now()
+      where rid = $1`,
+    [rid]
+  );
+}
+
+// ===== DELETE ACCOUNT (END) =====
 
 async function getOrCreateWallet(userId) {
   if (!userId) throw new Error('userId required');
@@ -1195,6 +1326,7 @@ app.post('/webhook/razorpay', express.raw({ type: 'application/json' }), async (
 });
 // ---- END /webhook/razorpay ----
 app.use(express.json());
+app.use(express.urlencoded({ extended: false }));
 // Session check: tells frontend if cookie session is alive (14-day rolling)
 app.get('/auth/session', authRequired, (req, res) => {
   return res.json({
@@ -1211,6 +1343,157 @@ app.post('/auth/logout', (req, res) => {
   res.clearCookie(CSRF_COOKIE, { domain: '.buddyby.com', path: '/' });
   return res.json({ ok: true });
 });
+// ===== Delete Account: user request + admin console (BEGIN) =====
+
+// Helper: minimal HTML escaping
+function escHtml(s = '') {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+// 1) User submits delete request (requires login + CSRF)
+app.post('/privacy/delete-request', authRequired, verifyCsrf, async (req, res) => {
+  try {
+    const userId = getUserIdFrom(req);
+    const email = String(req.user?.email || req.body?.email || '').toLowerCase();
+
+    const meta = {
+      ip: req.ip,
+      ua: req.get('user-agent') || '',
+      ts: new Date().toISOString()
+    };
+
+    const rid = await createDeletionRequest({ userId, email, meta });
+
+    // Optional: email notify owner/admin
+    const notifyTo = (process.env.DELETE_TO_EMAIL || process.env.SEND_TO_EMAIL || '').trim();
+    if (notifyTo) {
+      const base = selfBase(req);
+      const adminListUrl = `${base}/admin/delete-requests`;
+      await sendResendMail({
+        to: notifyTo,
+        subject: 'New delete-account request',
+        html: `
+          <div style="font-family:Arial,sans-serif">
+            <p><b>New deletion request</b></p>
+            <p>RID: <code>${escHtml(rid)}</code></p>
+            <p>User ID: <code>${escHtml(userId)}</code></p>
+            <p>Email: <code>${escHtml(email || '')}</code></p>
+            <p>Admin: <a href="${adminListUrl}">${adminListUrl}</a></p>
+          </div>
+        `
+      }).catch(() => {});
+    }
+
+    return res.json({ ok: true, rid });
+  } catch (e) {
+    console.error('delete-request failed:', e?.message || e);
+    return res.status(500).json({ ok: false, error: 'server_error' });
+  }
+});
+
+// 2) Admin list (Basic Auth)
+app.get('/admin/delete-requests', requireAdmin, async (req, res) => {
+  try {
+    const items = await listPendingDeletionRequests(50);
+
+    const rows = items.map(r => `
+      <tr>
+        <td><code>${escHtml(r.rid)}</code></td>
+        <td><code>${escHtml(r.user_id)}</code></td>
+        <td>${escHtml(r.email || '')}</td>
+        <td>${escHtml(r.created_at || '')}</td>
+        <td><a href="/admin/delete?rid=${encodeURIComponent(r.rid)}">Open</a></td>
+      </tr>
+    `).join('');
+
+    const html = `
+      <html><head><meta charset="utf-8"><title>Deletion Requests</title></head>
+      <body style="font-family:Arial,sans-serif;padding:16px">
+        <h2>Pending deletion requests</h2>
+        <table border="1" cellpadding="8" cellspacing="0">
+          <thead>
+            <tr>
+              <th>rid</th><th>user_id</th><th>email</th><th>created_at</th><th>action</th>
+            </tr>
+          </thead>
+          <tbody>${rows || '<tr><td colspan="5">No pending requests</td></tr>'}</tbody>
+        </table>
+      </body></html>
+    `;
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    return res.status(200).send(html);
+  } catch (e) {
+    console.error('admin list failed:', e?.message || e);
+    return res.status(500).send('Server error');
+  }
+});
+
+// 3) Admin confirm page
+app.get('/admin/delete', requireAdmin, async (req, res) => {
+  try {
+    const rid = String(req.query?.rid || '').trim();
+    if (!rid) return res.status(400).send('Missing rid');
+
+    const row = await getDeletionRequest(rid);
+    if (!row) return res.status(404).send('Not found');
+
+    const html = `
+      <html><head><meta charset="utf-8"><title>Confirm delete</title></head>
+      <body style="font-family:Arial,sans-serif;padding:16px">
+        <h2>Confirm deletion</h2>
+        <p><b>rid:</b> <code>${escHtml(row.rid)}</code></p>
+        <p><b>user_id:</b> <code>${escHtml(row.user_id)}</code></p>
+        <p><b>email:</b> <code>${escHtml(row.email || '')}</code></p>
+        <p><b>status:</b> <code>${escHtml(row.status)}</code></p>
+
+        <form method="POST" action="/admin/delete">
+          <input type="hidden" name="rid" value="${escHtml(row.rid)}" />
+          <button type="submit" style="padding:10px 14px">Delete user data now</button>
+        </form>
+
+        <p style="margin-top:14px"><a href="/admin/delete-requests">Back</a></p>
+      </body></html>
+    `;
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    return res.status(200).send(html);
+  } catch (e) {
+    console.error('admin confirm failed:', e?.message || e);
+    return res.status(500).send('Server error');
+  }
+});
+
+// 4) Admin executes deletion
+app.post('/admin/delete', requireAdmin, async (req, res) => {
+  try {
+    const rid = String(req.body?.rid || '').trim();
+    if (!rid) return res.status(400).send('Missing rid');
+
+    const row = await getDeletionRequest(rid);
+    if (!row) return res.status(404).send('Not found');
+
+    if (row.status !== 'PENDING') {
+      return res.status(200).send(`Already processed: ${escHtml(row.status)}`);
+    }
+
+    await deleteUserDataNow(row.user_id);
+    await markDeletionDone(rid);
+
+    return res.status(200).send(
+      `Deleted user data for <code>${escHtml(row.user_id)}</code> and marked request <code>${escHtml(rid)}</code> as DELETED.<br><br>
+       <a href="/admin/delete-requests">Back to list</a>`
+    );
+  } catch (e) {
+    console.error('admin delete failed:', e?.message || e);
+    return res.status(500).send('Server error');
+  }
+});
+
+// ===== Delete Account: user request + admin console (END) =====
 // Guest init: creates (or reuses) a guest session cookie and grants trial once
 app.post('/auth/guest/init', async (req, res) => {
   try {
@@ -2376,4 +2659,5 @@ app.post('/claim-welcome', authRequired, verifyCsrf, async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
