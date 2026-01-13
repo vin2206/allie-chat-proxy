@@ -1325,8 +1325,8 @@ app.post('/webhook/razorpay', express.raw({ type: 'application/json' }), async (
   }
 });
 // ---- END /webhook/razorpay ----
-app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
+app.use(express.json());
 // Session check: tells frontend if cookie session is alive (14-day rolling)
 app.get('/auth/session', authRequired, (req, res) => {
   return res.json({
@@ -2659,5 +2659,6 @@ app.post('/claim-welcome', authRequired, verifyCsrf, async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
