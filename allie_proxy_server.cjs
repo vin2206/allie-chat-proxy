@@ -2188,7 +2188,7 @@ Aaj ki tareekh: ${req.body.clientDate}. Jab bhi koi baat ya sawal year/month/dat
       // Optional: roleplay requires premium (controlled by ENV)
       if (ROLEPLAY_NEEDS_PREMIUM && roleMode === 'roleplay' && !isPremium) {
         return res.status(200).json({
-          reply: "Roleplay unlock karo na… phir main proper wife/bhabhi/gf/ex-gf vibe mein aaongi 💕",
+          reply: "Roleplay unlock karo na… phir main proper wife/Mrs Next Door/gf/ex-gf vibe mein aaongi 💕",
           locked: true
         });
       }
@@ -2775,5 +2775,6 @@ app.post('/claim-welcome', authRequired, verifyCsrf, async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
