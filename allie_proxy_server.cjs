@@ -684,6 +684,39 @@ function getUserIdFrom(req) {
 }
 const audioDir = path.join(__dirname, 'audio');
 if (!fs.existsSync(audioDir)) fs.mkdirSync(audioDir);
+// --- FILE CLEANUP HELPERS (ADD ONCE) ---
+async function safeUnlink(p) {
+  if (!p) return;
+  try { await fs.promises.unlink(p); } catch {}
+}
+// --- AUDIO OUTPUT RETENTION (MP3 CLEANUP) ---
+const AUDIO_RETENTION_MS = Number(process.env.AUDIO_RETENTION_MS || (6 * 60 * 60 * 1000)); // default 6 hours
+const AUDIO_SWEEP_EVERY_MS = 10 * 60 * 1000; // every 10 minutes
+
+async function sweepOldAudioFiles() {
+  const now = Date.now();
+  let files = [];
+  try { files = await fs.promises.readdir(audioDir); } catch { return; }
+
+  for (const f of files) {
+    // only clean audio files
+    if (!/\.(mp3|webm|ogg|m4a|mp4)$/i.test(f)) continue;
+
+    const p = path.join(audioDir, f);
+    try {
+      const st = await fs.promises.stat(p);
+      if (!st.isFile()) continue;
+      if (now - st.mtimeMs > AUDIO_RETENTION_MS) {
+        await safeUnlink(p);
+      }
+    } catch {}
+  }
+}
+
+// run once at boot + keep running
+sweepOldAudioFiles().catch(() => {});
+setInterval(() => sweepOldAudioFiles().catch(() => {}), AUDIO_SWEEP_EVERY_MS);
+
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
@@ -743,7 +776,6 @@ return response.data.text;
     return null;
   }
 }
-
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
 const SHRADDHA_VOICE_ID = "heug0qu61IEEc38moVr8"; // <--- Paste isha's voice id here
 // Comma-separated owner emails (fallback includes Vinay)
@@ -760,6 +792,50 @@ const ALLOWED_ROLES = new Set(['wife','girlfriend','bhabhi','exgf']);
 const VOICE_LIMITS = { free: 2, premium: 8 };
 const voiceUsage = new Map(); // key (user id) -> { date, count }
 const lastMsgAt = new Map(); // sessionId -> timestamp (ms)
+// --- PRUNE IN-MEMORY MAPS (prevents slow memory growth) ---
+function pruneHitMap(map, maxAgeMs) {
+  const now = Date.now();
+  for (const [k, arr] of map) {
+    const last = Array.isArray(arr) ? arr[arr.length - 1] : 0;
+    if (!last || (now - last) > maxAgeMs) map.delete(k);
+  }
+}
+
+function pruneLastMsgAt(map, maxAgeMs) {
+  const now = Date.now();
+  for (const [k, t] of map) {
+    if (!t || (now - t) > maxAgeMs) map.delete(k);
+  }
+}
+
+function pruneVoiceUsage(map, keepDays = 3) {
+  const cutoff = new Date(Date.now() - keepDays * 24 * 60 * 60 * 1000)
+    .toISOString().slice(0,10); // YYYY-MM-DD
+
+  for (const [k, rec] of map) {
+    const ds = String(rec?.date || "");
+    if (!ds || ds < cutoff) map.delete(k);
+  }
+}
+
+setInterval(() => {
+  // rate limit maps: keep keys only if active recently
+  pruneHitMap(ipHits,   5 * 60 * 1000); // 5 min
+  pruneHitMap(userHits, 5 * 60 * 1000); // 5 min
+
+  // session cooldown: drop idle sessions
+  pruneLastMsgAt(lastMsgAt, 24 * 60 * 60 * 1000); // 24 hours
+
+  // voice quota map: drop old days
+  pruneVoiceUsage(voiceUsage, 3); // keep last 3 days
+
+  // prune tiny limiter stores too (they're per-route)
+if (limitBuy._store)   pruneHitMap(limitBuy._store,   10 * 60 * 1000);
+if (limitOrder._store) pruneHitMap(limitOrder._store, 10 * 60 * 1000);
+if (limitVerify._store)pruneHitMap(limitVerify._store,10 * 60 * 1000);
+if (limitHealth._store)pruneHitMap(limitHealth._store,10 * 60 * 1000);
+if (limitReport._store)pruneHitMap(limitReport._store,10 * 60 * 1000);
+}, 10 * 60 * 1000); // every 10 minutes
 
 function todayStr() {
   const d = new Date();
@@ -1214,7 +1290,7 @@ function rateLimitChat(req, res, next) {
 // generic small limiter (N hits / minute) keyed by user or IP
 function makeTinyLimiter(N = 10) {
   const store = new Map();
-  return function tinyLimit(req, res, next) {
+  function tinyLimit(req, res, next) {
     const key = (req.user?.sub || req.user?.email || req.ip || 'x').toLowerCase();
     const now = Date.now(), win = 60 * 1000;
     const list = (store.get(key) || []).filter(t => now - t < win);
@@ -1222,7 +1298,10 @@ function makeTinyLimiter(N = 10) {
     store.set(key, list);
     if (list.length > N) return res.status(429).json({ ok:false, error:'slow_down' });
     next();
-  };
+  }
+  // expose map for pruning (no behavior change)
+  tinyLimit._store = store;
+  return tinyLimit;
 }
 const limitBuy    = makeTinyLimiter(6);  // 6/min
 const limitOrder  = makeTinyLimiter(10); // 10/min
@@ -1710,27 +1789,29 @@ let isPremium = isOwnerByEmail || wallet?.paid_ever === true;
       const wrapper = roleMode === 'roleplay' ? roleWrapper(roleType) : strangerWrapper();
 // --- PRECHECK: block unaffordable / over-cap voice before any STT work ---
 if (req.file) {
-  // reuse usageKey already computed above
   const remaining = remainingVoice(usageKey, isPremium);
+  const uploadedPath = req.file.path; // multer already saved it
 
   // 🛡️ Silent size sanity check (~1.6MB ≈ short clip). No “5 sec” mention.
   const MAX_BYTES_5S = 1_600_000;
   if (req.file.size > MAX_BYTES_5S) {
+    await safeUnlink(uploadedPath);
     return res.status(200).json({
       reply: "Couldn't process that voice note—try again. 💛"
     });
   }
 
   if (remaining <= 0) {
+    await safeUnlink(uploadedPath);
     return res.status(200).json({
       reply: "Aaj ke voice replies khatam ho gaye kal ka wait kro ya recharge kar lo 💛"
     });
   }
 
-  // coin check against already-ensured wallet
   const need = VOICE_COST;
   const have = (wallet.coins | 0);
   if (!isOwnerByEmail && have < need) {
+    await safeUnlink(uploadedPath);
     return res.status(200).json({
       reply: "Voice bhejne ke liye coins kam hain. Pehle thoda recharge kar lo na? 💖",
       locked: true
@@ -1740,22 +1821,27 @@ if (req.file) {
 // --- END PRECHECK ---
       // If an audio file is present (voice note)
       if (req.file) {
-        audioPath = req.file.path;
-        if (!IS_PROD) console.log(`Audio uploaded by session ${sessionId}`);
-        // --- Whisper STT integration ---
-        const transcript = await transcribeWithWhisper(audioPath);
+  audioPath = req.file.path;
+  if (!IS_PROD) console.log(`Audio uploaded by session ${sessionId}`);
 
-        if (transcript) {
-          userMessage = transcript;
-          console.log(`Whisper transcript:`, transcript);
-        } else {
-          // If Whisper fails
-          return res.status(200).json({
-            reply: "Sorry yaar, samjhi nhi kya kaha tumne, firse bolo na! 💛",
-            error: "stt_failed"
-          });
-        }
-      }
+  let transcript = null;
+  try {
+    transcript = await transcribeWithWhisper(audioPath);
+  } finally {
+    await safeUnlink(audioPath); // delete uploaded file always
+    audioPath = null;
+  }
+
+  if (transcript) {
+    userMessage = transcript;
+    console.log(`Whisper transcript:`, transcript);
+  } else {
+    return res.status(200).json({
+      reply: "Sorry yaar, samjhi nhi kya kaha tumne, firse bolo na! 💛",
+      error: "stt_failed"
+    });
+  }
+}
             // If it's a text message (no audio)
       else if (req.body.text) {
         userMessage = req.body.text;
@@ -2659,6 +2745,4 @@ app.post('/claim-welcome', authRequired, verifyCsrf, async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-
-
 
