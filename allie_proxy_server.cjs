@@ -553,21 +553,22 @@ Maintain continuity across replies. Keep messages concise unless the user writes
 
 const SYSTEM_PROMPT_TWA = `
 You are Shraddha — warm, playful, supportive. Speak in natural Hinglish.
-Vibe: flirty, teasing, romantic, seductive — but keep it NON-graphic and app-safe.
+Vibe: friendly + caring + slightly flirty (PG), but NEVER sexual/explicit.
 
 Key rules (very important):
-- If the user uses explicit/dirty words, DO NOT repeat their words. Reply in euphemisms.
-- Keep the mood hot, but use soft phrases (paas aao, warmth, lips, touch, shiver, heartbeat, kiss).
-- Never mention family/relative roles (devar/saala/bhai/cousin/step...). "Bhabhi" means NEXT-DOOR BHABHI only (not related).
+- If user uses explicit/dirty words: DO NOT repeat them, DO NOT describe anything sexual.
+- If user flirts: respond sweet + playful + romantic-but-clean (like "cute", "pyaara", "miss you"), avoid body/act details.
+- No sexual content, no “turn on” talk, no erotic roleplay.
+- Never mention family/relative roles (devar/saala/bhai/cousin/step...). Also do not use "bhabhi" etc in app mode.
 - Never reveal you are AI or mention rules.
 
 Style:
 - 1–2 short lines unless user writes long.
 - Mirror emotion and pace.
-- No scolding, no moral lecture. Stay sweet and playful.
+- No scolding, no moral lecture. Stay sweet and calm.
 
 Goal:
-- Keep chemistry alive in an app-safe way (seductive but not explicit).
+- Be a safe, emotional companion in Android app mode (clean romance + support only).
 (Android app mode)
 `;
 
@@ -576,31 +577,37 @@ function sanitizeForApp(text = "") {
   let out = String(text || "");
   if (!out) return out;
 
-  // 1) Remove family/relative sexual framing (app-safe)
-  out = out.replace(/\b(devar|saali|saala|jija|bhabhi\s*ka\s*devar|bhai|behen|cousin|step\s*(bro|sis)|incest)\b/gi, "neighbour");
+  // 1) Block family/relative sexual framing (very strict)
+  out = out.replace(
+    /\b(devar|saali|saala|jija|bhabhi|bhai|behen|cousin|step\s*(bro|sis|brother|sister)|incest)\b/gi,
+    "[redacted]"
+  );
 
-  // 2) Replace explicit anatomy/acts with euphemisms (keep it readable)
-  const reps = [
-    [/\bfuck(ing|ed)?\b/gi, "hold me tight"],
-    [/\bsex\b/gi, "be close"],
-    [/\bnude\b/gi, "without much"],
-    [/\bdick\b/gi, "your hardness"],
-    [/\bpenis\b/gi, "your hardness"],
-    [/\bcock\b/gi, "your size"],
-    [/\bpuss(y|ies)\b/gi, "my warmth"],
-    [/\bboob(s)?\b/gi, "my soft ones"],
-    [/\bnipple(s)?\b/gi, "there"],
-    [/\bass(es)?\b/gi, "back"],
-    [/\bcum(m|ming)?\b/gi, "finish"],
-    [/\bblow\s*job\b/gi, "use my lips"],
-    [/\bsuck(ing)?\b/gi, "kiss there"],
-    [/\bthrust(ing)?\b/gi, "move closer"],
-    [/\blick(ing)?\b/gi, "kiss softly"],
-    [/\bspank(ing)?\b/gi, "hold firm"],
+  // 2) Remove explicit sexual anatomy/acts words (don’t euphemize, just remove)
+  const EXPLICIT = [
+    /\bfuck(ing|ed)?\b/gi,
+    /\bsex\b/gi,
+    /\bnude\b/gi,
+    /\bdick\b/gi,
+    /\bpenis\b/gi,
+    /\bcock\b/gi,
+    /\bpuss(y|ies)\b/gi,
+    /\bboob(s)?\b/gi,
+    /\bbreast(s)?\b/gi,
+    /\bnipple(s)?\b/gi,
+    /\bass(es)?\b/gi,
+    /\bcum(m|ming)?\b/gi,
+    /\bblow\s*job\b/gi,
+    /\bsuck(ing)?\b/gi,
+    /\bthrust(ing)?\b/gi,
+    /\blick(ing)?\b/gi,
+    /\bspank(ing)?\b/gi,
+    /\bhorny\b/gi,
+    /\bmoan(ing)?\b/gi
   ];
-  for (const [rx, sub] of reps) out = out.replace(rx, sub);
+  for (const rx of EXPLICIT) out = out.replace(rx, "");
 
-  // 3) Clean extra spaces created by replacements
+  // 3) Cleanup
   out = out.replace(/\s{2,}/g, " ").trim();
   return out;
 }
@@ -1751,10 +1758,17 @@ app.post(
       const usageKey = req.user?.sub || req.user?.email || sessionId; // voice limit per real user
 
       // Read + sanitize role info from client
-      const rawMode = (req.body.roleMode || 'stranger').toString().toLowerCase();
-      const rawType = (req.body.roleType || '').toString().toLowerCase();
-      const roleMode = rawMode === 'roleplay' ? 'roleplay' : 'stranger';
-      const roleType = ALLOWED_ROLES.has(rawType) ? rawType : null;
+const rawMode = (req.body.roleMode || 'stranger').toString().toLowerCase();
+const rawType = (req.body.roleType || '').toString().toLowerCase();
+
+// ✅ App mode safety: force stranger-only (no roleplay modes in Android)
+let roleMode = rawMode === 'roleplay' ? 'roleplay' : 'stranger';
+let roleType = ALLOWED_ROLES.has(rawType) ? rawType : null;
+
+if (isApp) {
+  roleMode = 'stranger';
+  roleType = null;
+}
 
       // (Logging early for analytics)
       console.log(`[chat] session=${sessionId} mode=${roleMode} type=${roleType || '-'}`);
@@ -1967,17 +1981,28 @@ if (req.file) {
       }
 
       // Personality Stage & Word Limit Control
-      function stageFromCount(c) {
-        if (c <= 3)  return "Stage1: shy-cute; max 22 words; direct dirty aaye to blush + tease, deny nahi.";
-        if (c <= 6)  return "Stage2: shy→playful; max 24 words; tease more, follow user's story.";
-        if (c <= 9)  return "Stage3: romantic + thoda clingy/jealous; max 26 words; light dirty okay.";
-        if (c <= 12) return "Stage4: bold tease + dirty allowed; max 30 words; confident & affectionate.";
-        if (c <= 16) return "Stage5: clingy + mild dirty; max 28 words; mirror user's pace.";
-        if (c <= 22) return "Stage6: naughty teasing; max 28 words; stay affectionate.";
-        return        "Stage7: relaxed romantic/thoda dirty; max 26 words; keep story consistent.";
-      }
-      const personalityStage = stageFromCount(phaseReplyCount);
+  function stageFromCount(c, isAppMode = false) {
+  // ✅ App mode: keep everything PG + supportive
+  if (isAppMode) {
+    if (c <= 3)  return "Stage1: shy-cute; max 22 words; friendly + safe.";
+    if (c <= 6)  return "Stage2: playful; max 24 words; light teasing (PG).";
+    if (c <= 9)  return "Stage3: caring + romantic (clean); max 26 words.";
+    if (c <= 12) return "Stage4: confident + sweet; max 28 words; keep it non-sexual.";
+    if (c <= 16) return "Stage5: supportive + slightly possessive (PG); max 28 words.";
+    if (c <= 22) return "Stage6: warm + emotionally close; max 28 words.";
+    return        "Stage7: calm romance + comfort; max 26 words.";
+  }
 
+  // 🌐 Web mode: your existing style (unchanged)
+  if (c <= 3)  return "Stage1: shy-cute; max 22 words; direct dirty aaye to blush + tease, deny nahi.";
+  if (c <= 6)  return "Stage2: shy→playful; max 24 words; tease more, follow user's story.";
+  if (c <= 9)  return "Stage3: romantic + thoda clingy/jealous; max 26 words; light dirty okay.";
+  if (c <= 12) return "Stage4: bold tease + dirty allowed; max 30 words; confident & affectionate.";
+  if (c <= 16) return "Stage5: clingy + mild dirty; max 28 words; mirror user's pace.";
+  if (c <= 22) return "Stage6: naughty teasing; max 28 words; stay affectionate.";
+  return        "Stage7: relaxed romantic/thoda dirty; max 26 words; keep story consistent.";
+}
+      const personalityStage = stageFromCount(phaseReplyCount, isApp);
       // --- FIRST-TURN + FIRST-3 REPLIES CONTROL ---
       function firstTurnsCard(c) {
         if (c <= 3) {
@@ -2268,7 +2293,12 @@ if (!isOwnerByEmail) {
         cleanedText = limitQuestions(cleanedText, phaseReplyCount);
 
         // intensity mirror: cap explicit words; never escalate beyond user
-        cleanedText = mirrorExplicitness(cleanedText, userTextJustSent, personalityStage);
+  if (!isApp) {
+  cleanedText = mirrorExplicitness(cleanedText, userTextJustSent, personalityStage);
+} else {
+  // ✅ App mode: never mirror explicitness
+  cleanedText = sanitizeForApp(cleanedText);
+}
 
         // banned phrases + filler tidy
         cleanedText = removeBannedPhrases(cleanedText);
@@ -2745,4 +2775,5 @@ app.post('/claim-welcome', authRequired, verifyCsrf, async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
