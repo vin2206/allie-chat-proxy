@@ -507,8 +507,8 @@ const PACKS = {
   weekly: { amount: 199, coins: 2000, ms: 7*24*60*60*1000 }
 };
 // Server-enforced costs (match UI) — ENV driven
-const TEXT_COST  = Number(process.env.COST_TEXT  || 2);
-const VOICE_COST = Number(process.env.COST_VOICE || 3);
+const TEXT_COST  = Number(process.env.COST_TEXT  || 1);
+const VOICE_COST = Number(process.env.COST_VOICE || 2);
 
 // Trial
 const TRIAL_ENABLED = (process.env.TRIAL_ENABLED || 'true') === 'true';
@@ -2775,7 +2775,3 @@ app.post('/claim-welcome', authRequired, verifyCsrf, async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-
-
-
-
