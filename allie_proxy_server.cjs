@@ -512,7 +512,7 @@ const VOICE_COST = Number(process.env.COST_VOICE || 3);
 
 // Trial
 const TRIAL_ENABLED = (process.env.TRIAL_ENABLED || 'true') === 'true';
-const TRIAL_AMOUNT  = Number(process.env.TRIAL_AMOUNT || 150);
+const TRIAL_AMOUNT  = Number(process.env.TRIAL_AMOUNT || 250);
 
 // Razorpay visibility flags
 const ALLOW_WEB_RAZORPAY = (process.env.ALLOW_WEB_RAZORPAY || 'true') === 'true';
@@ -2746,7 +2746,7 @@ app.get('/me/wallet', authRequired, async (req, res) => {
     return res.status(500).json({ ok:false, error:'server_error' });
   }
 });
-// One-time welcome claim (150 coins) – controlled by server
+// One-time welcome claim (250 coins) – controlled by server
 app.post('/claim-welcome', authRequired, verifyCsrf, async (req, res) => {
   try {
     const userId = getUserIdFrom(req);
@@ -2775,6 +2775,7 @@ app.post('/claim-welcome', authRequired, verifyCsrf, async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
