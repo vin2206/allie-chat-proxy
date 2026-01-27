@@ -2507,8 +2507,28 @@ app.post('/buy/:pack', limitBuy, authRequired, verifyCsrf, async (req, res) => {
 
   const userId    = getUserIdFrom(req);
   const userEmail = String(req.body?.userEmail || '').toLowerCase();
-  const returnUrl = String(req.body?.returnUrl || `${FRONTEND_URL}/payment/thanks`);
+  function pickReturnUrl(req) {
+  // 1) If frontend sends returnUrl, accept only if its origin is allowlisted
+  const raw = String(req.body?.returnUrl || "");
+  if (raw) {
+    try {
+      const u = new URL(raw);
+      const origin = `${u.protocol}//${u.host}`;
+      if (ALLOWED_ORIGINS.has(origin)) return u.toString();
+    } catch {}
+  }
 
+  // 2) Else derive from request Origin header (best for multi-frontend)
+  const origin = req.get("origin");
+  if (origin && ALLOWED_ORIGINS.has(origin)) {
+    return `${origin}/chat`;
+  }
+
+  // 3) Fallback only if no origin (non-browser)
+  return `${origin}/chat`;
+}
+  
+  const returnUrl = pickReturnUrl(req);
   // ✅ unique ref for payment links
   const uniqueRef = makeRef(
     userId,
@@ -2775,3 +2795,4 @@ app.post('/claim-welcome', authRequired, verifyCsrf, async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
