@@ -506,9 +506,23 @@ const PACKS = {
   daily:  { amount: 49,  coins: 420,  ms: 24*60*60*1000 },
   weekly: { amount: 199, coins: 2000, ms: 7*24*60*60*1000 }
 };
-// Server-enforced costs (match UI) — ENV driven
-const TEXT_COST  = Number(process.env.COST_TEXT  || 1);
-const VOICE_COST = Number(process.env.COST_VOICE || 2);
+// ===== Dynamic costs (per request) =====
+// Defaults are safe: if you don't set env vars, it falls back to your current costs.
+const COST_TEXT_WEB   = Number(process.env.COST_TEXT_WEB   || process.env.COST_TEXT  || 1);
+const COST_VOICE_WEB  = Number(process.env.COST_VOICE_WEB  || process.env.COST_VOICE || 2);
+
+const COST_TEXT_LOVE  = Number(process.env.COST_TEXT_LOVE  || COST_TEXT_WEB);
+const COST_VOICE_LOVE = Number(process.env.COST_VOICE_LOVE || COST_VOICE_WEB);
+
+const COST_TEXT_APP   = Number(process.env.COST_TEXT_APP   || COST_TEXT_WEB);
+const COST_VOICE_APP  = Number(process.env.COST_VOICE_APP  || COST_VOICE_WEB);
+
+function getCostsForReq(req) {
+  const mode = reqMode(req);
+  if (mode === 'app')  return { mode, text: COST_TEXT_APP,  voice: COST_VOICE_APP };
+  if (mode === 'love') return { mode, text: COST_TEXT_LOVE, voice: COST_VOICE_LOVE };
+  return { mode, text: COST_TEXT_WEB, voice: COST_VOICE_WEB };
+}
 
 // Trial
 const TRIAL_ENABLED = (process.env.TRIAL_ENABLED || 'true') === 'true';
@@ -525,7 +539,32 @@ function isAppRequest(req) {
     (req.body?.src === 'twa')
   );
 }
+// --- Detect LOVE web vs normal web ---
+function getReqOrigin(req) {
+  // Prefer Origin header (CORS requests)
+  const origin = (req.get('origin') || '').trim();
+  if (origin) return origin;
 
+  // Fallback to Referer (some browsers/flows)
+  const ref = (req.get('referer') || '').trim();
+  if (ref) {
+    try { return new URL(ref).origin; } catch {}
+  }
+
+  return '';
+}
+
+function isLoveWebRequest(req) {
+  const o = getReqOrigin(req);
+  return o === 'https://love.buddyby.com';
+}
+
+function reqMode(req) {
+  // app > love > normal web
+  if (isAppRequest(req)) return 'app';
+  if (isLoveWebRequest(req)) return 'love';
+  return 'web';
+}
 // --- Razorpay gate (single source of truth) ---
 function razorpayGate(req, res) {
   const isApp = isAppRequest(req);
@@ -570,6 +609,13 @@ Style:
 Goal:
 - Be a safe, emotional companion in Android app mode (clean romance + support only).
 (Android app mode)
+`;
+
+const SYSTEM_PROMPT_LOVE = `
+You are Shraddha, a realistic girlfriend persona. Speak in natural Hinglish and mirror the user's vibe.
+Be emotionally responsive, teasing, flirty, romantic, and BOLDER than normal web when appropriate.
+Keep it playful + intimate. Maintain continuity across replies. Keep messages concise unless the user writes long.
+(LOVE website mode)
 `;
 
 // Optional light content filter for app mode
@@ -1750,6 +1796,10 @@ app.post(
       let audioPath = null;
       // Detect the Android app (TWA) either by header from chat.jsx or query ?src=twa
       const isApp = isAppRequest(req);
+      const ctxCosts = getCostsForReq(req);
+      const TEXT_COST = ctxCosts.text;
+      const VOICE_COST = ctxCosts.voice;
+      const isLove = (ctxCosts.mode === 'love');
 
       // ===== BEGIN: your full chat logic moved inside the handler =====
 
@@ -2173,8 +2223,8 @@ Aaj ki tareekh: ${req.body.clientDate}. Jab bhi koi baat ya sawal year/month/dat
 
       const roleLock = roleDirectives(roleMode, roleType);
 
-     // Choose the base tone: Web (bold/flirty) vs App (PG-13)
-      const baseMode = isApp ? SYSTEM_PROMPT_TWA : SYSTEM_PROMPT_WEB;
+     // Choose the base tone: App (PG) vs Love (spicy) vs normal Web
+     const baseMode = isApp ? SYSTEM_PROMPT_TWA : (isLove ? SYSTEM_PROMPT_LOVE : SYSTEM_PROMPT_WEB);
 
       const systemPrompt =
         baseMode + "\n\n" +
@@ -2441,10 +2491,13 @@ const PORT = process.env.PORT || 3000;
 
 // Prices for UI (authoritative from server)
 app.get('/prices', (req, res) => {
+  const c = getCostsForReq(req);
+
   return res.json({
     ok: true,
-    text: Number(TEXT_COST),
-    voice: Number(VOICE_COST),
+    mode: c.mode,                 // "app" | "love" | "web"
+    text: Number(c.text),
+    voice: Number(c.voice),
     trialEnabled: TRIAL_ENABLED,
     trialAmount: Number(TRIAL_AMOUNT),
     allowWebRazorpay: ALLOW_WEB_RAZORPAY,
@@ -2513,19 +2566,28 @@ app.post('/buy/:pack', limitBuy, authRequired, verifyCsrf, async (req, res) => {
   if (raw) {
     try {
       const u = new URL(raw);
-      const origin = `${u.protocol}//${u.host}`;
-      if (ALLOWED_ORIGINS.has(origin)) return u.toString();
+      const o = `${u.protocol}//${u.host}`;
+      if (ALLOWED_ORIGINS.has(o)) return u.toString();
     } catch {}
   }
 
-  // 2) Else derive from request Origin header (best for multi-frontend)
-  const origin = req.get("origin");
+  // 2) Else derive from Origin (best for multi-frontend)
+  const origin = (req.get("origin") || "").trim();
   if (origin && ALLOWED_ORIGINS.has(origin)) {
     return `${origin}/chat`;
   }
 
-  // 3) Fallback only if no origin (non-browser)
-  return `${origin}/chat`;
+  // 3) Else derive from Referer (some flows)
+  const ref = (req.get("referer") || "").trim();
+  if (ref) {
+    try {
+      const o = new URL(ref).origin;
+      if (ALLOWED_ORIGINS.has(o)) return `${o}/chat`;
+    } catch {}
+  }
+
+  // 4) Final safe fallback (never undefined)
+  return `${FRONTEND_URL}/chat`;
 }
   
   const returnUrl = pickReturnUrl(req);
@@ -2795,4 +2857,3 @@ app.post('/claim-welcome', authRequired, verifyCsrf, async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-
