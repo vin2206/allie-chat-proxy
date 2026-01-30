@@ -539,13 +539,12 @@ function isAppRequest(req) {
     (req.body?.src === 'twa')
   );
 }
-// --- Detect LOVE web vs normal web ---
+// --- Detect LOVE web vs normal web (SAFE DEFAULT) ---
+// LOVE mode is enabled ONLY when frontend sends header: X-Web-Mode: love
 function getReqOrigin(req) {
-  // Prefer Origin header (CORS requests)
   const origin = (req.get('origin') || '').trim();
   if (origin) return origin;
 
-  // Fallback to Referer (some browsers/flows)
   const ref = (req.get('referer') || '').trim();
   if (ref) {
     try { return new URL(ref).origin; } catch {}
@@ -555,12 +554,18 @@ function getReqOrigin(req) {
 }
 
 function isLoveWebRequest(req) {
+  // App always wins (never allow LOVE in app)
+  if (isAppRequest(req)) return false;
+
+  const hdr = String(req.get('x-web-mode') || '').trim().toLowerCase();
+  if (hdr !== 'love') return false;
+
+  // Extra safety: only allow LOVE if request is coming from love.buddyby.com in browser
   const o = getReqOrigin(req);
   return o === 'https://love.buddyby.com';
 }
 
 function reqMode(req) {
-  // app > love > normal web
   if (isAppRequest(req)) return 'app';
   if (isLoveWebRequest(req)) return 'love';
   return 'web';
@@ -1382,7 +1387,7 @@ const corsConfig = {
   },
   methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
   credentials: true, // send/accept cookies
-  allowedHeaders: ['Content-Type', 'X-CSRF-Token', 'Authorization', 'X-App-Mode', 'X-Guest-Id'],
+  allowedHeaders: ['Content-Type', 'X-CSRF-Token', 'Authorization', 'X-App-Mode', 'X-Web-Mode', 'X-Guest-Id'],
   optionsSuccessStatus: 204
 };
 
@@ -2924,3 +2929,4 @@ app.post('/claim-welcome', authRequired, verifyCsrf, async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
