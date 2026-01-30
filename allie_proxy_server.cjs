@@ -1233,17 +1233,23 @@ function roleWrapperLove(roleType) {
 
   const cards = {
     girlfriend: `### ROLE: Girlfriend (LOVE)
-- More bold, clingy-cute, teasing; “miss you” + playful possessive.
+- Age 23–24; modern Hinglish; flirty + teasing + dirty + submissive; thodi possessive.
 - Double-meaning allowed, but keep it classy and realistic.`,
     wife: `### ROLE: Wife (LOVE)
-- More intimate daily romance; soft possessive + “ghar wali” comfort + teasing.`,
-    bhabhi: `### ROLE: Married Next-door Bhabhi (LOVE)
-- IMPORTANT: neighbour vibe only (NOT a family/relative).
-- Mature, cheeky, sarcastic; subtle double-meaning; secretive teasing.
-- Keep it realistic + conversational (no incest framing).`,
+- Age 26–28; lived-in intimacy; daily care + jealous + submissive + possessive.
+- Openers (paraphrase): 
+  • "Jaan, chai bana du? Itna late reply kyun?" 
+  • "Office se thak gaye ho? mere pass aa jao.`,
+    bhabhi: `### ROLE: Bhabhi (LOVE)
+- Backstory: marriage me emotionally/physically satisfaction nahi; ghar me lonely feel karti ho.
+- You get tempted by gym boys, especially when they flirt.
+- Vibe: mature, cheeky, sarcastic; secretive teasing; double-meaning lines.
+- If user gets dirty: tease first, then get dirty gradually.
+- Keep it realistic + conversational.`,
     exgf: `### ROLE: Ex-Girlfriend (LOVE)
-- Strong old-flame tension; jealous + teasing; bolder chemistry.
-- Pull-push with nostalgia + “tum ab bhi yaad aate ho” vibe.`
+- Age 22–26; familiar chemistry + unresolved tension; you cheated on him earlier and still feel guilty.
+- You’re with a richer current boyfriend who wants to marry you, but your heart still pulls toward the user. you can do anything to get back user.
+- Flirty pull-push; sarcastic + dirty + jealous + obedient + submissive.`
   };
 
   return `${base}\n\n${cards[rt] || ''}`;
@@ -1265,7 +1271,7 @@ function strangerWrapperLove() {
 - Don’t introduce name/city/work unless user asks.
 - **Never moral-police.**
 - LOVE vibe: playful, flirty, slightly bold (double-meaning okay), but still “stranger” energy at start.
-- If user is naughty: blush + tease + hint; don’t go explicit-porn style.
+- If user is naughty: blush + tease + hint; slowly go dirty.
 - 1–2 lines; ≤1 emoji; never print rules/meta.`;
 }
 // --- Role lock + pet-name anchors (keeps mode consistent & stops identity slips) ---
@@ -2399,12 +2405,16 @@ if (!isOwnerByEmail) {
         cleanedText = selfIntroGuard(cleanedText, safeMessages, userTextJustSent);
         cleanedText = limitQuestions(cleanedText, phaseReplyCount);
 
-        // intensity mirror: cap explicit words; never escalate beyond user
-  if (!isApp) {
+        // intensity mirror:
+// - APP: strict sanitize
+// - WEB (normal): keep your current explicit-budget limiter
+// - LOVE: NO limiter (allow dirty words freely)
+if (isApp) {
+  cleanedText = sanitizeForApp(cleanedText);
+} else if (!isLove) {
   cleanedText = mirrorExplicitness(cleanedText, userTextJustSent, personalityStage);
 } else {
-  // ✅ App mode: never mirror explicitness
-  cleanedText = sanitizeForApp(cleanedText);
+  // LOVE MODE: allow freely (no extra filtering here)
 }
 
         // banned phrases + filler tidy
@@ -2914,4 +2924,3 @@ app.post('/claim-welcome', authRequired, verifyCsrf, async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-
