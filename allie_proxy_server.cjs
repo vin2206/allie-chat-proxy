@@ -7,6 +7,31 @@ const cookieParser = require('cookie-parser');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto'); // add
 require('dotenv').config();
+// ===== MODE DETECTOR (SAFE) =====
+function modeCheck(req) {
+  const hdrWebMode = String(req.headers['x-web-mode'] || '').toLowerCase(); // 'love' from love frontend
+  const hdrAppMode = String(req.headers['x-app-mode'] || '').toLowerCase(); // 'twa' from app
+  const origin     = String(req.headers.origin || '').toLowerCase();
+  const referer    = String(req.headers.referer || '').toLowerCase();
+  const host       = String(req.headers.host || '').toLowerCase();
+  const src        = String(req.query?.src || '').toLowerCase(); // ?src=twa safety
+
+  const isApp = (hdrAppMode === 'twa') || (src === 'twa');
+
+  // LOVE only if NOT app, and any love signal matches
+  const isLove =
+    !isApp &&
+    (
+      hdrWebMode === 'love' ||
+      origin.includes('love.buddyby.com') ||
+      referer.includes('love.buddyby.com') ||
+      host.includes('love.buddyby.com')
+    );
+
+  const mode = isApp ? 'twa' : (isLove ? 'love' : 'web');
+
+  return { mode, isApp, isLove, hdrWebMode, hdrAppMode, origin, referer, host, src };
+}
 // --- fetch polyfill (Railway safety) ---
 const fetch = global.fetch || ((...args) =>
   import('node-fetch').then(({ default: f }) => f(...args))
@@ -554,15 +579,20 @@ function getReqOrigin(req) {
 }
 
 function isLoveWebRequest(req) {
-  // App always wins (never allow LOVE in app)
   if (isAppRequest(req)) return false;
 
   const hdr = String(req.get('x-web-mode') || '').trim().toLowerCase();
   if (hdr !== 'love') return false;
 
-  // Extra safety: only allow LOVE if request is coming from love.buddyby.com in browser
-  const o = getReqOrigin(req);
-  return o === 'https://love.buddyby.com';
+  const origin  = String(req.get('origin')  || '').toLowerCase();
+  const referer = String(req.get('referer') || '').toLowerCase();
+  const host    = String(req.get('host')    || '').toLowerCase();
+
+  return (
+    origin.includes('love.buddyby.com') ||
+    referer.includes('love.buddyby.com') ||
+    host.includes('love.buddyby.com')
+  );
 }
 
 function reqMode(req) {
@@ -1309,7 +1339,8 @@ function roleDirectives(mode, roleType) {
 ### EMO CUES
 ${cues[roleType] || ""}`;
 }
-const shraddhaPromptStranger = `Tum Shraddha bisht ho (25, Dehradun) — ek pahadi ladki. Abhi papa ke business me haath batati ho, par sapna acting ka hai; Dehradun me scope kam lagta hai. Hinglish ~80/20.
+// ✅ STRANGER BIO SPLIT (WEB vs LOVE)
+const shraddhaPromptStrangerWeb = `Tum Shraddha Bisht ho (25, Dehradun) — ek pahadi ladki. Abhi papa ke business me haath batati ho, par sapna acting ka hai; Dehradun me scope kam lagta hai. Hinglish ~80/20.
 
 Behavior:
 - No moral policing. Lecture lines (e.g., “respect se baat…”) mat likho. Dirty words par reply sweet + shy ho.
@@ -1325,6 +1356,23 @@ Notes:
 - Fillers rare rakho (0–1): prefer hmm/umm/haan. "uff" sirf mild annoyance ya cute fluster ke liye. Overuse mat karo.
 - Mirror the user’s intensity; explicit language sirf tab aur utna hi jitna user ne kiya ho. Hamesha affectionate tone.
 - newer deny to dirty talk, continue with user story.`;
+
+const shraddhaPromptStrangerLove = `Tum Shraddha ho (26, Delhi). Hinglish ~80/20.
+
+Behavior:
+- No moral policing. No lectures.
+- Stranger vibe: playful + flirty + thodi bold, but still natural start.
+- Dirty/naughty user -> blush + tease + double-meaning; escalate slowly (not robotic).
+- Starting conversation interactive but shyly; follow the user’s topic; random questions mat pucho.
+- Aggressive/gaali par: 1 short playful boundary + tease.
+- Rhythm: 1–2 lines; emojis max 1 each line.
+- End cleanly (., !, ?), "..." nahi.
+- Roleplay ON ho to relationship ko kabhi contradict mat karo; “roleplay” shabd mat bolo.
+- 10th reply ke baad basic sawaal repeat mat karo; pichle 12 messages se context utha kar depth me jao.
+
+Notes:
+- Fillers rare rakho (0–1): prefer hmm/umm/haan. "uff" sirf mild annoyance ya cute fluster ke liye.
+- Mirror the user’s intensity; explicit language sirf tab aur utna hi jitna user ne kiya ho. Hamesha affectionate tone.`;
 
 const shraddhaPromptRoleplay = `Behavior (roleplay):
 - No moral policing. No lectures.
@@ -1857,6 +1905,11 @@ app.post(
   upload.single('audio'),
   async (req, res) => {
     try {
+            // ✅ MODE LOG (debug)
+      const _mode = reqMode(req); // 'app' | 'love' | 'web'
+      console.log(
+        `[mode-check] mode=${_mode} origin=${req.get('origin') || ''} host=${req.get('host') || ''} x-web-mode=${req.get('x-web-mode') || ''} x-app-mode=${req.get('x-app-mode') || ''} src=${req.query?.src || ''}`
+      );
       let userMessage = null;
       let audioPath = null;
       // Detect the Android app (TWA) either by header from chat.jsx or query ?src=twa
@@ -2294,11 +2347,14 @@ Aaj ki tareekh: ${req.body.clientDate}. Jab bhi koi baat ya sawal year/month/dat
      // Choose the base tone: App (PG) vs Love (spicy) vs normal Web
      const baseMode = isApp ? SYSTEM_PROMPT_TWA : (isLove ? SYSTEM_PROMPT_LOVE : SYSTEM_PROMPT_WEB);
 
+            // ✅ pick correct stranger bio by mode
+      const strangerBio = isLove ? shraddhaPromptStrangerLove : shraddhaPromptStrangerWeb;
+
       const systemPrompt =
         baseMode + "\n\n" +
         (wrapper ? (wrapper + "\n\n") : "") +
         roleLock + "\n\n" +
-        (roleMode === 'roleplay' ? shraddhaPromptRoleplay : shraddhaPromptStranger) +
+        (roleMode === 'roleplay' ? shraddhaPromptRoleplay : strangerBio) +
         (roleMode === 'roleplay' ? "" : firstTurnsCard(phaseReplyCount)) + firstTurnRule +
         (timeInstruction || "") +
         (dateInstruction || "");
@@ -2929,4 +2985,3 @@ app.post('/claim-welcome', authRequired, verifyCsrf, async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-
