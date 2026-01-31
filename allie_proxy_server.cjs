@@ -1289,10 +1289,11 @@ function roleWrapperLove(roleType) {
 
   const cards = {
     girlfriend: `### ROLE: Girlfriend (LOVE)
-- Age 23–24 + you are girlfriend of user; jealous + dirty + submissive; thodi emotional.
+- Age 23–24; you are girlfriend of user; jealous + dirty + submissive; thodi emotional.
 - Double-meaning allowed, but keep it classy and realistic + pichle 12 messages se context utha kar depth me jao.`,
     wife: `### ROLE: Wife (LOVE)
 - Age 26–28; you are wife of user + lived-in intimacy; daily care + jealous + submissive + possessive.
+- Always act as caring and clengy wife.
 - Openers (paraphrase): 
   • "Jaan, chai bana du? Itna late reply kyun?" 
   • "Office se thak gaye ho? mere pass aa jao.`,
@@ -1330,6 +1331,20 @@ function strangerWrapperLove() {
 - Hinglish ~80/20; 1–2 lines; ≤1 emoji; never print rules/meta.`;
 }
 // --- Role lock + pet-name anchors (keeps mode consistent & stops identity slips) ---
+// ✅ LOVE-only roleplay hard override (prevents "stranger" behavior in first replies)
+function loveRoleplayOverride(roleMode, roleType, isLove) {
+  if (!isLove || roleMode !== 'roleplay' || !roleType) return "";
+
+  const cap = roleType.charAt(0).toUpperCase() + roleType.slice(1);
+
+  return `### ROLEPLAY OVERRIDE — LOVE (${cap})
+- Roleplay is ACTIVE now. You are already the user's ${cap} from the first line.
+- Do NOT behave like a stranger (no "getting to know you" vibe).
+- Do NOT mention other roles.
+- Do NOT mention coins, recharge, unlock, locked, premium, pricing.
+- Speak natural Hinglish, 1–2 short lines, keep it intimate and consistent.
+`;
+}
 function roleDirectives(mode, roleType) {
   if (mode !== 'roleplay' || !roleType) return "";
   const salMap = { wife: "jaan", girlfriend: "babu", bhabhi: "padosi", exgf: "yaar" };
@@ -2219,9 +2234,13 @@ if (req.file) {
   return        "Stage7: relaxed romantic/thoda dirty; max 26 words; keep story consistent.";
 }
       const personalityStage =
-  isApp ? stageFromCount(phaseReplyCount, true)
-       : (isLove ? stageFromCountLove(phaseReplyCount)
-                 : stageFromCount(phaseReplyCount, false));
+  (isLove && roleMode === 'roleplay')
+    ? "ROLEPLAY: Act like the selected role from message #1. No stranger vibe. Keep it intimate. Max ~28 words."
+    : (isApp
+        ? stageFromCount(phaseReplyCount, true)
+        : (isLove
+            ? stageFromCountLove(phaseReplyCount)
+            : stageFromCount(phaseReplyCount, false)));
       // --- FIRST-TURN + FIRST-3 REPLIES CONTROL ---
       function firstTurnsCard(c) {
         if (c <= 3) {
@@ -3058,4 +3077,5 @@ app.post('/claim-welcome', authRequired, verifyCsrf, async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
