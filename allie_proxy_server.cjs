@@ -1946,18 +1946,35 @@ app.post(
       const usageKey = req.user?.sub || req.user?.email || sessionId; // voice limit per real user
 
       // Read + sanitize role info from client
-const rawMode = (req.body.roleMode || 'stranger').toString().toLowerCase();
-const rawType = (req.body.roleType || '').toString().toLowerCase();
+const rawMode = (req.body.roleMode || 'stranger').toString().trim().toLowerCase();
+let rawType   = (req.body.roleType || '').toString().trim().toLowerCase();
+
+// ✅ tolerate small variations WITHOUT changing frontend behavior
+rawType = rawType
+  .replace(/\s+/g, '')     // remove internal spaces
+  .replace(/-/g, '');      // ex-gf -> exgf
+
+// Alias map (safe)
+const ROLE_ALIASES = {
+  gf: 'girlfriend',
+  girlfrnd: 'girlfriend',
+  ex: 'exgf',
+  exgf: 'exgf',
+  bhabi: 'bhabhi',
+  bhabhi: 'bhabhi',
+  wife: 'wife',
+  girlfriend: 'girlfriend'
+};
+rawType = ROLE_ALIASES[rawType] || rawType;
 
 // ✅ App mode safety: force stranger-only (no roleplay modes in Android)
-let roleMode = rawMode === 'roleplay' ? 'roleplay' : 'stranger';
+let roleMode = (rawMode === 'roleplay') ? 'roleplay' : 'stranger';
 let roleType = ALLOWED_ROLES.has(rawType) ? rawType : null;
 
 if (isApp) {
   roleMode = 'stranger';
   roleType = null;
 }
-
       // (Logging early for analytics)
       console.log(`[chat] session=${sessionId} mode=${roleMode} type=${roleType || '-'}`);
       // --- Resolve user & ensure welcome bonus BEFORE any spend checks ---
@@ -2225,28 +2242,53 @@ if (req.file) {
 - If it's a compliment like "sundar/beautiful/cute", thank softly and blush. No new topic yet.`;
       }
 
-      function selfIntroGuard(text = "", history = [], lastUser = "") {
-        const prevAssistantCount = history.filter(m => m.role === "assistant").length;
-        if (prevAssistantCount < 8) return text;
+      function selfIntroGuard(text = "", history = [], lastUser = "", mode = "stranger") {
+  const prevAssistantCount = history.filter(m => m.role === "assistant").length;
 
-        const userAskedIntro =
-          /(kahan se|city|naam|name|kya karte|job|work)/i.test(lastUser) ||
-          history.slice(-4).some(m => m.role === "user" &&
-            /(kahan se|city|naam|name|kya karte|job|work)/i.test(m.content || "")
-          );
-        if (userAskedIntro) return text;
+  // ✅ Stranger mode: keep your old behavior (allow early natural bonding)
+  if (mode !== "roleplay" && prevAssistantCount < 8) return text;
 
-        const introBits = [
-          /mai?n?\s+dehra?du[nu]n\s+se\s+hu?n/i,
-          /\bpapa\s+ka\s+business\b/i,
-          /\bmera\s+naam\s+shraddha\b/i,
-          /\bmeri\s+age\b/i
-        ];
-        let out = text;
-        introBits.forEach(rx => { out = out.replace(rx, ""); });
-        out = out.replace(/\s{2,}/g, " ").replace(/\s+([.?!])/g, "$1").trim();
-        return out || "Chalo isi topic ko aage badhate hain, tum bolo.";
-      }
+  // ✅ If user asked intro directly, allow it (both stranger + roleplay)
+  const userAskedIntro =
+    /(kahan se|city|naam|name|kya karte|job|work|age|umar|delhi|dehradun|from where|where are you from)/i.test(lastUser) ||
+    history.slice(-4).some(m => m.role === "user" &&
+      /(kahan se|city|naam|name|kya karte|job|work|age|umar|delhi|dehradun|from where|where are you from)/i.test(m.content || "")
+    );
+  if (userAskedIntro) return text;
+
+  // ✅ Roleplay: strip bio/self-intro hard (from reply #1)
+  // Stranger: same stripping but starts after 8 replies (handled above)
+  const introBits = [
+    /\bmera\s+naam\s+shraddha\b/ig,
+    /\bmai?n?\s+shraddha\b/ig,
+    /\bi\s*am\s*shraddha\b/ig,
+
+    /\bdehra?du[nu]n\b/ig,
+    /\bdelhi\b/ig,
+    /\bwork\s*-?\s*from\s*-?\s*home\b/ig,
+    /\bwfh\b/ig,
+    /\bmba\b/ig,
+
+    /\bpapa\s+ka\s+business\b/ig,
+    /\bfather'?s\s+shop\b/ig,
+    /\bacting\s+ka\s+sapna\b/ig,
+    /\b3\s+past\s+relationships\b/ig,
+
+    /\bmeri\s+age\b/ig,
+    /\bmain\s+\d{2}\s+(saal|years)\b/ig
+  ];
+
+  let out = String(text || "");
+  for (const rx of introBits) out = out.replace(rx, "");
+
+  out = out
+    .replace(/\s{2,}/g, " ")
+    .replace(/\s+([.?!])/g, "$1")
+    .trim();
+
+  // If stripping nuked the sentence, give a neutral continuation
+  return out || "Chalo isi topic ko aage badhate hain, tum bolo.";
+}
 
       function limitQuestions(text = "", replyCount = 0) {
         const early = replyCount <= 3; // first few turns → only 1 question
@@ -2494,7 +2536,7 @@ if (!isOwnerByEmail) {
 
         // remove repeats + self-intros; keep only 1 question early
         cleanedText = dropRepeatedBasics(cleanedText, safeMessages);
-        cleanedText = selfIntroGuard(cleanedText, safeMessages, userTextJustSent);
+        cleanedText = selfIntroGuard(cleanedText, safeMessages, userTextJustSent, roleMode);
         cleanedText = limitQuestions(cleanedText, phaseReplyCount);
 
         // intensity mirror:
@@ -3016,5 +3058,4 @@ app.post('/claim-welcome', authRequired, verifyCsrf, async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-
 
