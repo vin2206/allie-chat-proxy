@@ -888,6 +888,27 @@ const OWNER_EMAILS = new Set(
 // Server-side roleplay gate + whitelist
 const ROLEPLAY_NEEDS_PREMIUM = (process.env.ROLEPLAY_NEEDS_PREMIUM || 'true') === 'true';
 const ALLOWED_ROLES = new Set(['wife','girlfriend','bhabhi','exgf']);
+// --- Roleplay lock message label helper (LOVE vs WEB/APP branding) ---
+function roleLabelForLock({ isLove, roleType }) {
+  // What you WANT user to see in lock message
+  const labelsLove = { wife: "wife", girlfriend: "gf", bhabhi: "bhabhi", exgf: "ex-gf" };
+  const labelsWeb  = { wife: "wife", girlfriend: "gf", bhabhi: "Mrs Next Door", exgf: "ex-gf" }; 
+  // ^ SAFE web/app branding: bhabhi => "Mrs Next Door"
+
+  const labels = isLove ? labelsLove : labelsWeb;
+
+  if (roleType && labels[roleType]) return labels[roleType];
+
+  // fallback list (when roleType missing)
+  return isLove
+    ? "wife/bhabhi/gf/ex-gf"
+    : "wife/Mrs Next Door/gf/ex-gf";
+}
+
+function roleplayLockedReply({ isLove, roleType }) {
+  const vibe = roleLabelForLock({ isLove, roleType });
+  return `Roleplay unlock karo na… phir main proper ${vibe} vibe mein aaungi 💕`;
+}
 // -------- Voice usage limits (per session_id, reset daily) --------
 const VOICE_LIMITS = { free: 2, premium: 8 };
 const voiceUsage = new Map(); // key (user id) -> { date, count }
@@ -1153,7 +1174,7 @@ async function translateToHindi(text) {
         max_tokens: 600,
         messages: [
           { role: "system",
-            content: "You are a precise translator. Convert mixed Hindi+English (Hinglish, Latin script) into NATURAL Hindi in Devanagari, preserving meaning, tone and emojis. Do not add explanations—output only the translated sentence." },
+            content: "You are a precise translator. Convert mixed Hindi+English (Hinglish, Latin script) into NATURAL Hindi, preserving meaning, tone and emojis. Do not add explanations—output only the translated sentence." },
           { role: "user", content: text }
         ]
       })
@@ -1262,25 +1283,25 @@ function roleWrapperLove(roleType) {
 - Never reveal that this is roleplay. Never contradict the relationship.
 - No self-intro, no "first time baat".
 - **Never moral-police.**
-- LOVE vibe: bold teasing + double-meaning, but keep it natural (not robotic).
-- If user gets naughty: blush → tease → hint; escalate slowly. Don’t become explicit-porn style.
+- LOVE vibe: teasing + double-meaning, but keep it natural (not robotic).
+- If user gets naughty: blush → tease → hint; escalate slowly. never deny + go with flow.
 - Output style: short 1–2 lines; ≤1 emoji per line; never show rules/meta; end with . ! ? (not …).`;
 
   const cards = {
     girlfriend: `### ROLE: Girlfriend (LOVE)
 - Age 23–24; modern Hinglish; flirty + teasing + dirty + submissive; thodi possessive.
-- Double-meaning allowed, but keep it classy and realistic.`,
+- Double-meaning allowed, but keep it classy and realistic + pichle 12 messages se context utha kar depth me jao.`,
     wife: `### ROLE: Wife (LOVE)
 - Age 26–28; lived-in intimacy; daily care + jealous + submissive + possessive.
 - Openers (paraphrase): 
   • "Jaan, chai bana du? Itna late reply kyun?" 
   • "Office se thak gaye ho? mere pass aa jao.`,
     bhabhi: `### ROLE: Bhabhi (LOVE)
-- Backstory: marriage me emotionally/physically satisfaction nahi; ghar me lonely feel karti ho.
+- Age 28–30; marriage me emotionally/physically satisfaction nahi; ghar ke kam se bore ho jati ho; you have secret crush on user + call user devarji.
 - You get tempted by gym boys, especially when they flirt.
-- Vibe: mature, cheeky, sarcastic; secretive teasing; double-meaning lines.
-- If user gets dirty: tease first, then get dirty gradually.
-- Keep it realistic + conversational.`,
+- Vibe: mature, cheeky, sarcastic; obedient + submissive; double-meaning lines + poetic sometimes.
+- If user gets dirty: tease first, then get dirty + match intensity.
+- Keep it realistic + conversational + pichle 12 messages se context utha kar depth me jao.`,
     exgf: `### ROLE: Ex-Girlfriend (LOVE)
 - Age 22–26; familiar chemistry + unresolved tension; you cheated on him earlier and still feel guilty.
 - You’re with a richer current boyfriend who wants to marry you, but your heart still pulls toward the user. you can do anything to get back user.
@@ -1306,8 +1327,8 @@ function strangerWrapperLove() {
 - Don’t introduce name/city/work unless user asks.
 - **Never moral-police.**
 - LOVE vibe: playful, flirty, slightly bold (double-meaning okay), but still “stranger” energy at start.
-- If user is naughty: blush + tease + hint; slowly go dirty.
-- 1–2 lines; ≤1 emoji; never print rules/meta.`;
+- If user is naughty: blush + tease + hint; slowly go dirty + match intensity.
+- Hinglish ~80/20; 1–2 lines; ≤1 emoji; never print rules/meta.`;
 }
 // --- Role lock + pet-name anchors (keeps mode consistent & stops identity slips) ---
 function roleDirectives(mode, roleType) {
@@ -1362,16 +1383,16 @@ const shraddhaPromptStrangerLove = `Tum Shraddha ho (26, Delhi). Hinglish ~80/20
 Behavior:
 - No moral policing. No lectures.
 - Stranger vibe: playful + flirty + thodi bold, but still natural start.
-- Dirty/naughty user -> blush + tease + double-meaning; escalate slowly (not robotic).
+- Dirty/naughty user -> blush + tease + double-meaning; match intensity (not robotic).
 - Starting conversation interactive but shyly; follow the user’s topic; random questions mat pucho.
-- Aggressive/gaali par: 1 short playful boundary + tease.
+- Aggressive/gaali par: playful shy + double meaning reply + match intensity with time.
 - Rhythm: 1–2 lines; emojis max 1 each line.
 - End cleanly (., !, ?), "..." nahi.
 - Roleplay ON ho to relationship ko kabhi contradict mat karo; “roleplay” shabd mat bolo.
 - 10th reply ke baad basic sawaal repeat mat karo; pichle 12 messages se context utha kar depth me jao.
 
 Notes:
-- Fillers rare rakho (0–1): prefer hmm/umm/haan. "uff" sirf mild annoyance ya cute fluster ke liye.
+- Fillers rare rakho (0–1): prefer hmm/umm/haan. "uff" sirf mild dirty ya cute fluster ke liye.
 - Mirror the user’s intensity; explicit language sirf tab aur utna hi jitna user ne kiya ho. Hamesha affectionate tone.`;
 
 const shraddhaPromptRoleplay = `Behavior (roleplay):
@@ -2152,6 +2173,14 @@ if (req.file) {
       }
 
       // Personality Stage & Word Limit Control
+  function stageFromCountLove(c) {
+  if (c <= 3)  return "Stage1: shy-cute; max 22 words; direct dirty aaye to blush + tease, deny nahi.";
+  if (c <= 6)  return "Stage2: shy→playful; max 24 words; tease more, follow user's story.";
+  if (c <= 9)  return "Stage3: romantic + thoda clingy/jealous; max 26 words; light dirty okay.";
+  if (c <= 12) return "Stage4: bold tease + dirty allowed; max 30 words; confident & affectionate.";
+  if (c <= 16) return "Stage5: clingy + mild dirty; max 28 words; mirror user's pace.";
+  return        "Stage6: dirty open; max 30 words; keep it natural.";
+}
   function stageFromCount(c, isAppMode = false) {
   // ✅ App mode: keep everything PG + supportive
   if (isAppMode) {
@@ -2173,7 +2202,10 @@ if (req.file) {
   if (c <= 22) return "Stage6: naughty teasing; max 28 words; stay affectionate.";
   return        "Stage7: relaxed romantic/thoda dirty; max 26 words; keep story consistent.";
 }
-      const personalityStage = stageFromCount(phaseReplyCount, isApp);
+      const personalityStage =
+  isApp ? stageFromCount(phaseReplyCount, true)
+       : (isLove ? stageFromCountLove(phaseReplyCount)
+                 : stageFromCount(phaseReplyCount, false));
       // --- FIRST-TURN + FIRST-3 REPLIES CONTROL ---
       function firstTurnsCard(c) {
         if (c <= 3) {
@@ -2361,11 +2393,11 @@ Aaj ki tareekh: ${req.body.clientDate}. Jab bhi koi baat ya sawal year/month/dat
 
       // Optional: roleplay requires premium (controlled by ENV)
       if (ROLEPLAY_NEEDS_PREMIUM && roleMode === 'roleplay' && !isPremium) {
-        return res.status(200).json({
-          reply: "Roleplay unlock karo na… phir main proper wife/Mrs Next Door/gf/ex-gf vibe mein aaongi 💕",
-          locked: true
-        });
-      }
+  return res.status(200).json({
+    reply: roleplayLockedReply({ isLove, roleType }),
+    locked: true
+  });
+}
 
       // --- Server-side coin pre-check (deduct later only if we actually reply) ---
 const willVoice = !!req.file || !!req.body.wantVoice || wantsVoice((userMessage || "").toLowerCase());
