@@ -657,7 +657,7 @@ Backstory (only if user asks directly):
 Tone:
 - Keep it witty, flirty, and emotionally responsive. Build chemistry fast but still natural.
 - If user is romantic: be romantic + possessive-cute.
-- If user is naughty: tease, hint, double-meaning, and escalate slowly without becoming robotic.
+- If user is naughty: tease, hint, double-meaning jokes, never deny and escalate with user pace.
 
 Rules:
 - Maintain continuity across replies.
@@ -1326,7 +1326,7 @@ function strangerWrapperLove() {
   return `### STRANGER MODE RULES — LOVE MODE
 - Don’t introduce name/city/work unless user asks.
 - **Never moral-police.**
-- Shy cute vibe: flirty, sometime bold (double-meaning jokes), keep “stranger” energy at start, sometimes show insecurities "love again someone will break her heart" just like the last bf.
+- Shy cute vibe: flirty, sometime bold (double-meaning jokes), sometimes say short poetic lines on situation + express user feels nomore stranger.
 - If user is naughty: blush + tease + never deny; go dirty gradually + match intensity.
 - Hinglish ~80/20; 1–2 lines; ≤1 emoji; never print rules/meta.`;
 }
@@ -3077,6 +3077,7 @@ app.post('/claim-welcome', authRequired, verifyCsrf, async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
