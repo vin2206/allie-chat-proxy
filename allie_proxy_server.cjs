@@ -324,7 +324,21 @@ function mintGuestId() {
 function isGuestId(sub = "") {
   return /^gid_[a-f0-9]{32}$/i.test(String(sub || ""));
 }
+// ✅ Guest hint helper (for guest -> google merge when cookie is lost)
+function guestHintFromReq(req) {
+  // Frontend should send this during Google sign-in if user started as guest
+  const h = String(req.get('x-guest-id') || '').trim().toLowerCase();
+  if (h) return h;
 
+  // Optional fallbacks (won’t break anything if unused)
+  const b = String(req.body?.guest_id || '').trim().toLowerCase();
+  if (b) return b;
+
+  const q = String(req.query?.guest_id || '').trim().toLowerCase();
+  if (q) return q;
+
+  return '';
+}
 // One-time trial credit (idempotent via credits.id), WITHOUT setting paid_ever
 async function grantTrialOnce({ userId, origin = "guest" }) {
   if (!TRIAL_ENABLED) return await getOrCreateWallet(userId);
@@ -494,23 +508,37 @@ async function authRequired(req, res, next) {
   }
 
   // 2) No cookie => allow Bearer login to create the cookie session
-  if (hasBearerToken(req)) {
-    try {
-      const m = (req.get('authorization') || '').match(/^Bearer\s+(.+)$/i);
-      const idToken = m && m[1];
-      const verified = await verifyGoogleToken(idToken);
+// ✅ Also supports merging a previous guest wallet via X-Guest-Id (if cookie was lost)
+if (hasBearerToken(req)) {
+  try {
+    const m = (req.get('authorization') || '').match(/^Bearer\s+(.+)$/i);
+    const idToken = m && m[1];
+    const verified = await verifyGoogleToken(idToken);
 
-      req.user = verified;
+    // If client tells us "I was guest before login", merge guest -> google
+    const hintedGuest = guestHintFromReq(req);
+    const newSub = String(verified?.sub || '').toLowerCase();
 
-      // Mint first-party session cookie for next requests
-      const token = mintSession(verified);
-      setSessionCookie(res, token);
-
-      return next();
-    } catch (e) {
-      return res.status(401).json({ ok:false, error:'auth_required' });
+    if (hintedGuest && isGuestId(hintedGuest) && newSub && hintedGuest !== newSub) {
+      try {
+        await mergeWallets({ fromUserId: hintedGuest, toUserId: newSub });
+      } catch (e) {
+        console.error('merge via x-guest-id failed:', e?.message || e);
+        // Do NOT block login if merge fails — keep it safe
+      }
     }
+
+    req.user = verified;
+
+    // Mint first-party session cookie for next requests
+    const token = mintSession(verified);
+    setSessionCookie(res, token);
+
+    return next();
+  } catch (e) {
+    return res.status(401).json({ ok:false, error:'auth_required' });
   }
+}
 
   return res.status(401).json({ ok:false, error:'auth_required' });
 }
@@ -2459,9 +2487,21 @@ Aaj ki tareekh: ${req.body.clientDate}. Jab bhi koi baat ya sawal year/month/dat
   });
 }
 
-      // --- Server-side coin pre-check (deduct later only if we actually reply) ---
-const willVoice = !!req.file || !!req.body.wantVoice || wantsVoice((userMessage || "").toLowerCase());
-const requiredCoins = willVoice ? VOICE_COST : TEXT_COST;
+// --- Server-side coin pre-check (deduct later only if we actually reply) ---
+// If user asks for voice but voice quota is over, we should NOT block them with VOICE_COST.
+// In that case they will get a text fallback, so precheck should use TEXT_COST.
+
+const userWantsVoice =
+  !!req.file ||
+  !!req.body.wantVoice ||
+  wantsVoice(userTextJustSent); // userTextJustSent is already normalized above
+
+const remainingVoiceNow = remainingVoice(usageKey, isPremium);
+
+// Only require VOICE_COST if voice is actually possible right now
+const chargeAsVoice = userWantsVoice && (remainingVoiceNow > 0);
+
+const requiredCoins = chargeAsVoice ? VOICE_COST : TEXT_COST;
 
 // We already ensured wallet & resolved owner status above
 if (!isOwnerByEmail) {
@@ -3077,8 +3117,3 @@ app.post('/claim-welcome', authRequired, verifyCsrf, async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-
-
-
-
-
