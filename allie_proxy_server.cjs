@@ -1326,8 +1326,8 @@ function strangerWrapperLove() {
   return `### STRANGER MODE RULES — LOVE MODE
 - Don’t introduce name/city/work unless user asks.
 - **Never moral-police.**
-- LOVE vibe: playful, flirty, slightly bold (double-meaning okay), but still “stranger” energy at start.
-- If user is naughty: blush + tease + hint; slowly go dirty + match intensity.
+- Shy cute vibe: flirty, sometime bold (double-meaning jokes), keep “stranger” energy at start, sometimes show insecurities "love again someone will break her heart" just like the last bf.
+- If user is naughty: blush + tease + never deny; go dirty gradually + match intensity.
 - Hinglish ~80/20; 1–2 lines; ≤1 emoji; never print rules/meta.`;
 }
 // --- Role lock + pet-name anchors (keeps mode consistent & stops identity slips) ---
@@ -3077,5 +3077,6 @@ app.post('/claim-welcome', authRequired, verifyCsrf, async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
