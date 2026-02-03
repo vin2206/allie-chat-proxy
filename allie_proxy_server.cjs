@@ -905,7 +905,7 @@ return response.data.text;
   }
 }
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
-const SHRADDHA_VOICE_ID = "heug0qu61IEEc38moVr8"; // <--- Paste isha's voice id here
+const SHRADDHA_VOICE_ID = "P3JECz9WQeXyyodBL3ZD"; // <--- Paste gargi's voice id here
 // Comma-separated owner emails (fallback includes Vinay)
 const OWNER_EMAILS = new Set(
   (process.env.OWNER_EMAILS || "vinayvedic23@gmail.com")
@@ -3117,4 +3117,5 @@ app.post('/claim-welcome', authRequired, verifyCsrf, async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
