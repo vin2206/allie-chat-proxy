@@ -770,18 +770,19 @@ async function reportAuthOrSecret(req, res, next) {
 // Strip sensitive fields from client-sent /report-error payloads
 function sanitizeClientErrorPayload(raw = {}) {
   const src = typeof raw === 'object' && raw ? raw : {};
+  const err = (src.error && typeof src.error === 'object') ? src.error : {};
+
   const allow = {
-    message: String(src.message || '').slice(0, 4000),
-    stack: String(src.stack || '').slice(0, 4000),
+    message: String(err.message || src.message || '').slice(0, 4000),
+    stack:   String(err.stack   || src.stack   || '').slice(0, 4000),
     endpoint: String(src.endpoint || ''),
     requestId: String(src.requestId || ''),
-    location: String(src.location || ''),
-    details: typeof src.details === 'string'
+    location: String(src.location || '').slice(0, 2000),
+    details:  typeof src.details === 'string'
       ? src.details.slice(0, 2000)
       : (typeof src.details === 'object' && src.details ? '[object]' : '')
   };
 
-  // Remove token/cookie-like substrings just in case they leaked into text blobs
   const STRIP = /(authorization|cookie|bb_sess|idtoken|x-csrf-token|api[_-]?key|secret)/ig;
   for (const k of Object.keys(allow)) {
     if (typeof allow[k] === 'string') {
@@ -1844,7 +1845,7 @@ app.post('/report-error', reportAuthOrSecret, limitReport, async (req, res) => {
     }
 
         // Sanitize: accept only safe fields; no tokens/cookies/headers
-    const safe = sanitizeClientErrorPayload(req.body?.error || {});
+    const safe = sanitizeClientErrorPayload(req.body || {});
     const message = `An error occurred in Allie Chat Proxy:\n${JSON.stringify(safe, null, 2)}`;
 
     console.log("Sending email with Resend...");
@@ -2560,29 +2561,59 @@ if (!isOwnerByEmail) {
       }
 
       try {
-        const primaryModel = "anthropic/claude-3.7-sonnet";
-        let response = await fetchFromModel(primaryModel, finalMessages);
+        const MODEL_CHAIN = [
+  "anthropic/claude-3.7-sonnet",
+  "anthropic/claude-3.5-haiku"
+];
 
-        if (!response.ok) {
-          await fetch(`${selfBase(req)}/report-error`, {
-  method: "POST",
-  headers: {
-    "Content-Type": "application/json",
-    "X-Report-Secret": process.env.REPORT_SECRET || ""
-  },
-  body: JSON.stringify({
-    error: { message: "Claude request failed" },
-    location: "/chat route",
-    details: "Primary model failed; no fallback by design"
-  })
-});
-          return res.status(200).json({
-            reply: "Oops… thoda slow ho gayi. Phir se poochho na? 🙂",
-            error: { message: "Claude request failed", handled: true }
-          });
-        }
+let response = null;
+let usedModel = MODEL_CHAIN[0];
+let lastErrText = "";
 
-        const data = await response.json();
+for (const m of MODEL_CHAIN) {
+  usedModel = m;
+
+  try {
+    response = await fetchFromModel(m, finalMessages);
+  } catch (e) {
+    lastErrText = `fetch threw: ${e?.message || e}`;
+    console.error("OpenRouter fetch threw:", m, lastErrText);
+    continue;
+  }
+
+  if (response.ok) break;
+
+  // Read body ONCE per failed attempt and store it
+  lastErrText = await response.text().catch(() => "");
+  console.error("OpenRouter model failed:", m, response.status, lastErrText.slice(0, 200));
+}
+
+if (!response || !response.ok) {
+  console.error("OpenRouter failed (all tried):", usedModel, response ? response.status : "no_response", lastErrText.slice(0, 800));
+
+  await fetch(`${selfBase(req)}/report-error`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Report-Secret": process.env.REPORT_SECRET || ""
+    },
+    body: JSON.stringify({
+      error: {
+        message: `OpenRouter failed (${response ? response.status : "no_response"})`,
+        stack: lastErrText.slice(0, 1500)
+      },
+      location: "/chat route",
+      details: `usedModel=${usedModel} chain=${MODEL_CHAIN.join(" -> ")}`
+    })
+  });
+
+  return res.status(200).json({
+    reply: "Oops… thoda slow ho gayi. Phir se poochho na? 🙂",
+    error: { message: "model_failed", status: response ? response.status : 0 }
+  });
+}
+
+const data = await response.json();
 
         const replyTextRaw =
           data.choices?.[0]?.message?.content ||
@@ -3117,5 +3148,3 @@ app.post('/claim-welcome', authRequired, verifyCsrf, async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-
-
