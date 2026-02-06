@@ -182,7 +182,7 @@ async function getOrCreateWallet(userId) {
   return rows[0];
 }
 
-async function creditOnce({ id, userId, coins, meta = {} }) {
+  async function creditPaidOnce({ id, userId, coins, meta = {} }) {
   if (!id || !userId || !Number.isInteger(coins)) throw new Error('bad credit input');
 
   // Idempotent: if credit id exists, do nothing
@@ -339,19 +339,53 @@ function guestHintFromReq(req) {
 
   return '';
 }
-// One-time trial credit (idempotent via credits.id), WITHOUT setting paid_ever
-async function grantTrialOnce({ userId, origin = "guest" }) {
+// One-time trial credit, enforced per-device + per-user (NO paid_ever)
+async function grantTrialOnce({ userId, origin = "guest", deviceId = "" }) {
   if (!TRIAL_ENABLED) return await getOrCreateWallet(userId);
 
-  const creditId = `trial:${userId}`;
-  const existing = await query(`select 1 from credits where id = $1`, [creditId]);
-  if (existing.rowCount) return await getOrCreateWallet(userId);
+  const dev = String(deviceId || "").toLowerCase();
+  const deviceCreditId = /^dev_[a-f0-9]{32}$/.test(dev) ? `device_trial:${dev}` : null;
 
+  // 1) If this device already claimed welcome, do NOT grant again (even for new userId)
+  if (deviceCreditId) {
+    const already = await query(`select 1 from credits where id = $1`, [deviceCreditId]);
+    if (already.rowCount) return await getOrCreateWallet(userId);
+  }
+
+  // 2) Keep your existing per-user idempotence too
+  const userTrialId = `trial:${userId}`;
+  const existing = await query(`select 1 from credits where id = $1`, [userTrialId]);
+  if (existing.rowCount) {
+    // optional: ensure device marker exists even if user already had trial
+    if (deviceCreditId) {
+      await query(
+        `insert into credits (id, user_id, coins, meta)
+         values ($1,$2,0,$3)
+         on conflict (id) do nothing`,
+        [deviceCreditId, userId, { source: 'trial_device_marker', origin }]
+      );
+    }
+    return await getOrCreateWallet(userId);
+  }
+
+  // 3) Grant trial once + write the device marker (0 coins) in same transaction
   await query('begin');
   try {
+    // device marker first (0 coins)
+    if (deviceCreditId) {
+      await query(
+        `insert into credits (id, user_id, coins, meta)
+         values ($1,$2,0,$3)
+         on conflict (id) do nothing`,
+        [deviceCreditId, userId, { source: 'trial_device_marker', origin }]
+      );
+    }
+
+    // actual trial credit
     await query(
-      `insert into credits (id, user_id, coins, meta) values ($1,$2,$3,$4)`,
-      [creditId, userId, TRIAL_AMOUNT, { source: 'trial', origin }]
+      `insert into credits (id, user_id, coins, meta)
+       values ($1,$2,$3,$4)`,
+      [userTrialId, userId, TRIAL_AMOUNT, { source: 'trial', origin, device: dev || null }]
     );
 
     await query(
@@ -1506,6 +1540,33 @@ const corsConfig = {
 app.use(cors(corsConfig));
 app.options('*', cors(corsConfig));
 app.use(cookieParser());  // <— read cookies
+// ===== DEVICE COOKIE (one-time welcome enforcement) =====
+const DEVICE_COOKIE = 'bb_device';
+const DEVICE_TTL_MS = 365 * 24 * 60 * 60 * 1000; // 1 year
+
+function mintDeviceId() {
+  return `dev_${crypto.randomBytes(16).toString('hex')}`;
+}
+
+function ensureDeviceCookie(req, res, next) {
+  let dev = String(req.cookies?.[DEVICE_COOKIE] || '').trim().toLowerCase();
+  if (!/^dev_[a-f0-9]{32}$/.test(dev)) {
+    dev = mintDeviceId();
+    res.cookie(DEVICE_COOKIE, dev, {
+      httpOnly: false,     // ok to be readable; server also reads it
+      secure: true,
+      sameSite: 'lax',
+      domain: '.buddyby.com',
+      path: '/',
+      maxAge: DEVICE_TTL_MS
+    });
+  }
+  req.deviceId = dev;
+  next();
+}
+
+app.use(ensureDeviceCookie);
+// ===== DEVICE COOKIE END =====
 // --- very light IP rate-limit for /chat (40 req / minute) ---
 const ipHits = new Map();
 function rateLimitChat(req, res, next) {
@@ -1583,7 +1644,7 @@ app.post('/webhook/razorpay', express.raw({ type: 'application/json' }), async (
       const paymentId = event?.payload?.payment?.entity?.id || '';
 
       if (pack && safeUserId && paymentId) {
-        await creditOnce({
+        await creditPaidOnce({
           id: paymentId,
           userId: safeUserId,
           coins: PACKS[pack].coins,
@@ -1613,7 +1674,7 @@ app.post('/webhook/razorpay', express.raw({ type: 'application/json' }), async (
           const safeUserId = userId || 'anon';
 
           if (pack && safeUserId) {
-            await creditOnce({
+            await creditPaidOnce({
               id: pay?.id || '',
               userId: safeUserId,
               coins: PACKS[pack].coins,
@@ -1806,12 +1867,29 @@ app.post('/admin/delete', requireAdmin, async (req, res) => {
 // Guest init: creates (or reuses) a guest session cookie and grants trial once
 app.post('/auth/guest/init', async (req, res) => {
   try {
+        // ✅ Block creating a NEW guest session if this device already claimed trial
+    // (but still allow if they are already logged-in as guest via cookie)
+    try {
+      const sess0 = verifySessionCookie(req);
+      const alreadyGuest = !!(sess0?.sub && isGuestId(sess0.sub));
+
+      if (!alreadyGuest) {
+        const dev = String(req.deviceId || "").toLowerCase();
+        if (/^dev_[a-f0-9]{32}$/.test(dev)) {
+          const id = `device_trial:${dev}`;
+          const r = await query(`select 1 from credits where id = $1`, [id]);
+          if (r.rowCount) {
+            return res.status(403).json({ ok:false, error:'guest_disabled' });
+          }
+        }
+      }
+    } catch {}
     // If we already have a valid session and it's a guest, reuse it
     const sess = verifySessionCookie(req);
     const existingSub = String(sess?.sub || '');
     if (existingSub && isGuestId(existingSub)) {
 await getOrCreateWallet(existingSub);
-const wallet = await grantTrialOnce({ userId: existingSub, origin: "guest" });
+const wallet = await grantTrialOnce({ userId: existingSub, origin: "guest", deviceId: req.deviceId });
 return res.json({ ok: true, guest_id: existingSub, wallet });
 }      
     // Make a fresh guest id + session cookie
@@ -1821,7 +1899,7 @@ return res.json({ ok: true, guest_id: existingSub, wallet });
 
     // Ensure wallet exists + grant trial one time
     await getOrCreateWallet(gid);
-    const wallet = await grantTrialOnce({ userId: gid, origin: "guest" });
+    const wallet = await grantTrialOnce({ userId: gid, origin: "guest", deviceId: req.deviceId });
 
     return res.json({ ok: true, guest_id: gid, wallet });
   } catch (e) {
@@ -3024,7 +3102,7 @@ const safeUserId = userId || 'anon';
 if (!pack) return res.status(400).json({ ok:false, error:'bad_ref' });
 
 // Durable credit (idempotent by payment id)
-await creditOnce({
+await creditPaidOnce({
   id: razorpay_payment_id,
   userId: safeUserId,
   coins: PACKS[pack].coins,
@@ -3071,7 +3149,7 @@ if (!createdAtSec || (nowSec - createdAtSec > ORDER_TTL_SEC)) {
   return res.status(400).json({ ok:false, error:'link_expired' });
 }
     
-    await creditOnce({
+    await creditPaidOnce({
   id: payment_id,
   userId: safeUserId,
   coins: PACKS[pack].coins,
@@ -3148,3 +3226,4 @@ app.post('/claim-welcome', authRequired, verifyCsrf, async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
