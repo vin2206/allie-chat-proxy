@@ -2762,8 +2762,7 @@ if (isApp) {
           }
           const voiceWordCap = 16;
           base = clampWordsSmart(base, Math.min(maxWords, voiceWordCap));
-          let ttsText = await translateToHindi(base);
-          if (!ttsText) ttsText = prepHinglishForTTS(base);
+          let ttsText = prepHinglishForTTS(base);
 
           // clamp AFTER translation too (keeps clips ~5s)
           ttsText = clampWordsSmart(ttsText, voiceWordCap);
@@ -3226,4 +3225,5 @@ app.post('/claim-welcome', authRequired, verifyCsrf, async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
