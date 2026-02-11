@@ -24,3 +24,15 @@ create table if not exists debits (
   meta jsonb,
   created_at timestamptz not null default now()
 );
+
+-- ✅ NEW: track raw payment facts (Razorpay/Cashfree/etc.)
+create table if not exists payments (
+  payment_id text primary key,
+  email text,
+  phone text,
+  amount int,
+  user_id text,
+  pack text,
+  status text,
+  created_at timestamptz default now()
+);
