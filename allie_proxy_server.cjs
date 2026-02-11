@@ -1631,26 +1631,21 @@ app.post('/webhook/razorpay', express.raw({ type: 'application/json' }), async (
     if (event?.event === 'payment_link.paid') {
       const link = event?.payload?.payment_link?.entity;
 
-      // TTL guard
-      const nowSec = Math.floor(Date.now() / 1000);
-      const createdAtSec = link?.created_at || 0;
-      if (!createdAtSec || (nowSec - createdAtSec > ORDER_TTL_SEC)) {
-        return res.json({ ok: true });
-      }
-
+      // TTL guard removed:
+      // We must credit even if paid late, because credits table is idempotent by payment_id.
       const ref  = link?.reference_id || '';
       const { pack, userId } = parseRef(ref);
       const safeUserId = userId || 'anon';
       const paymentId = event?.payload?.payment?.entity?.id || '';
 
-      if (pack && safeUserId && paymentId) {
-        await creditPaidOnce({
-          id: paymentId,
-          userId: safeUserId,
-          coins: PACKS[pack].coins,
-          meta: { pack, via: 'payment_link', link_id: link?.id || '' }
-        });
-      }
+      if (pack && PACKS[pack] && safeUserId && paymentId) {
+  await creditPaidOnce({
+    id: paymentId,
+    userId: safeUserId,
+    coins: PACKS[pack].coins,
+    meta: { pack, via: 'payment_link', link_id: link?.id || '' }
+  });
+}
     } else if (event?.event === 'payment.captured') {
       // Look up the order to recover our ref
       const pay = event?.payload?.payment?.entity;
@@ -1662,25 +1657,21 @@ app.post('/webhook/razorpay', express.raw({ type: 'application/json' }), async (
             { auth: { username: RAZORPAY_KEY_ID, password: RAZORPAY_KEY_SECRET } }
           );
 
-          // TTL guard
-          const nowSec = Math.floor(Date.now() / 1000);
-          const createdAtSec = or?.data?.created_at || 0;
-          if (!createdAtSec || (nowSec - createdAtSec > ORDER_TTL_SEC)) {
-            return res.json({ ok: true });
-          }
+          // TTL guard removed:
+          // We must credit even if paid late, because credits table is idempotent by payment_id.
 
           const ref = or?.data?.notes?.ref || or?.data?.receipt || '';
           const { pack, userId } = parseRef(ref);
           const safeUserId = userId || 'anon';
 
-          if (pack && safeUserId) {
-            await creditPaidOnce({
-              id: pay?.id || '',
-              userId: safeUserId,
-              coins: PACKS[pack].coins,
-              meta: { pack, via: 'order', order_id: orderId }
-            });
-          }
+          if (pack && PACKS[pack] && safeUserId) {
+  await creditPaidOnce({
+    id: pay?.id || '',
+    userId: safeUserId,
+    coins: PACKS[pack].coins,
+    meta: { pack, via: 'order', order_id: orderId }
+  });
+}
         } catch (e) {
           console.error('webhook fetch order failed', safeErr(e));
         }
@@ -3225,7 +3216,3 @@ app.post('/claim-welcome', authRequired, verifyCsrf, async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-
-
-
-
