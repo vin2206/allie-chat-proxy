@@ -587,6 +587,25 @@ const RAZORPAY_KEY_SECRET      = (process.env.RAZORPAY_KEY_SECRET || '').trim();
 const RAZORPAY_WEBHOOK_SECRET  = (process.env.RAZORPAY_WEBHOOK_SECRET || '').trim();
 const FRONTEND_URL             = process.env.FRONTEND_URL || 'https://chat.buddyby.com';
 const RZP_NOTIFY_EMAIL = (process.env.RZP_NOTIFY_EMAIL || 'false') === 'true';
+// =================== CASHFREE (fallback) ===================
+const CASHFREE_ENV           = (process.env.CASHFREE_ENV || 'prod').trim(); // 'prod' or 'test'
+const CASHFREE_CLIENT_ID     = (process.env.CASHFREE_CLIENT_ID || '').trim();
+const CASHFREE_CLIENT_SECRET = (process.env.CASHFREE_CLIENT_SECRET || '').trim();
+const CASHFREE_WEBHOOK_SECRET= (process.env.CASHFREE_WEBHOOK_SECRET || '').trim();
+
+const CASHFREE_RETURN_URL    = (process.env.CASHFREE_RETURN_URL || 'https://love.buddyby.com/chat').trim();
+const CASHFREE_NOTIFY_URL    = (process.env.CASHFREE_NOTIFY_URL || 'https://api.buddyby.com/webhook/cashfree').trim();
+
+// Cashfree visibility flags
+const ALLOW_WEB_CASHFREE = (process.env.ALLOW_WEB_CASHFREE || 'true') === 'true';
+const ALLOW_APP_CASHFREE = (process.env.ALLOW_APP_CASHFREE || 'false') === 'true';
+
+function cashfreeBase() {
+  // Cashfree PG API base (Cashfree v2023+)
+  return (CASHFREE_ENV === 'test')
+    ? 'https://sandbox.cashfree.com/pg'
+    : 'https://api.cashfree.com/pg';
+}
 
 // Packs (authoritative on server)
 const PACKS = {
@@ -839,6 +858,97 @@ function parseRef(ref) {
   // - pack|userId|anything...
   const parts = String(ref || '').split('|');
   return { pack: parts[0], userId: parts[1] };
+}
+function isBlockedRazorpayError(err) {
+  const status = err?.response?.status;
+  const msg =
+    String(err?.response?.data?.error?.description ||
+           err?.response?.data?.message ||
+           err?.message || '')
+    .toLowerCase();
+
+  // Fallback-worthy cases
+  if (status === 401 || status === 403) return true;
+
+  return (
+    msg.includes('suspend') ||
+    msg.includes('disabled') ||
+    msg.includes('blocked') ||
+    msg.includes('merchant') ||
+    msg.includes('account') ||
+    msg.includes('forbidden') ||
+    msg.includes('unauthorized') ||
+    msg.includes('not allowed')
+  );
+}
+
+// --- Cashfree gate (web/app visibility) ---
+function cashfreeGate(req, res) {
+  const isApp = isAppRequest(req);
+
+  if (isApp && !ALLOW_APP_CASHFREE) {
+    res.status(403).json({ ok:false, error:'cashfree_blocked_in_app' });
+    return false;
+  }
+  if (!isApp && !ALLOW_WEB_CASHFREE) {
+    res.status(403).json({ ok:false, error:'cashfree_blocked_on_web' });
+    return false;
+  }
+  return true;
+}
+
+// Create Cashfree payment session for a pack
+async function cashfreeCreateSession({ pack, userId }) {
+  if (!CASHFREE_CLIENT_ID || !CASHFREE_CLIENT_SECRET) {
+    throw new Error('cashfree_keys_missing');
+  }
+
+  const p = PACKS[pack];
+  if (!p) throw new Error('bad_pack');
+
+  // deterministic “ref” that lets us recover pack+userId in webhook
+  const ref = makeRef(userId, pack, crypto.randomBytes(8).toString('hex'));
+
+  // IMPORTANT: Cashfree order_id must be unique per attempt
+  const orderId = `bb_${pack}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+
+  const url = `${cashfreeBase()}/orders`;
+
+  const body = {
+    order_id: orderId,
+    order_amount: Number(p.amount),
+    order_currency: "INR",
+    customer_details: {
+      customer_id: String(userId || 'anon').slice(0, 50),
+      customer_email: "na@buddyby.com",
+      customer_phone: "9999999999"
+    },
+    order_meta: {
+      return_url: CASHFREE_RETURN_URL,
+      notify_url: CASHFREE_NOTIFY_URL
+    },
+    order_note: ref // <— we will parse this in webhook
+  };
+
+  const r = await axios.post(url, body, {
+    headers: {
+      "x-client-id": CASHFREE_CLIENT_ID,
+      "x-client-secret": CASHFREE_CLIENT_SECRET,
+      "x-api-version": "2023-08-01",
+      "Content-Type": "application/json"
+    },
+    timeout: 15000
+  });
+
+  // Cashfree returns payment_session_id; frontend redirects using checkout link
+  const payment_session_id = r?.data?.payment_session_id || '';
+  if (!payment_session_id) throw new Error('cashfree_no_session');
+
+  // Hosted checkout URL pattern (Cashfree docs: /pg/orders/sessions)
+  // We'll return a URL your frontend can open like Razorpay short_url
+  const checkoutUrl = `${cashfreeBase()}/orders/sessions?payment_session_id=${encodeURIComponent(payment_session_id)}`;
+
+  return { orderId, ref, payment_session_id, checkoutUrl };
 }
 function getUserIdFrom(req) {
   const sub   = String(req.user?.sub || '').toLowerCase();
@@ -1686,6 +1796,84 @@ app.post('/webhook/razorpay', express.raw({ type: 'application/json' }), async (
   }
 });
 // ---- END /webhook/razorpay ----
+// ---- Cashfree Webhook (must be ABOVE app.use(express.json())) ----
+app.post('/webhook/cashfree', express.raw({ type: 'application/json' }), async (req, res) => {
+  try {
+    // Cashfree signature header varies; common is "x-webhook-signature"
+    const sig = String(req.get('x-webhook-signature') || req.get('x-cashfree-signature') || '').trim();
+    const rawBody = req.body; // Buffer
+
+    if (!CASHFREE_WEBHOOK_SECRET) {
+      // Fail closed (no secret = don't accept)
+      return res.status(500).send('Webhook secret missing');
+    }
+
+    // Verify HMAC SHA256
+    const expected = crypto
+      .createHmac('sha256', CASHFREE_WEBHOOK_SECRET)
+      .update(rawBody)
+      .digest('base64');
+
+    if (!sig || sig !== expected) {
+      return res.status(400).send('Invalid signature');
+    }
+
+    const event = JSON.parse(rawBody.toString('utf8'));
+
+    // We only credit when payment is successful
+    // Cashfree event shapes can differ; cover common patterns
+    const data = event?.data || event?.payload || event || {};
+    const order = data?.order || data?.order_entity || data || {};
+    const payment = data?.payment || data?.payment_entity || data || {};
+
+    const orderStatus =
+      String(order?.order_status || data?.order_status || '').toUpperCase();
+
+    const paymentStatus =
+      String(payment?.payment_status || data?.payment_status || '').toUpperCase();
+
+    const isPaid =
+      orderStatus === 'PAID' ||
+      paymentStatus === 'SUCCESS' ||
+      paymentStatus === 'PAID';
+
+    if (!isPaid) {
+      return res.status(200).json({ ok:true });
+    }
+
+    // Unique payment id for idempotency
+    const cf_payment_id =
+      String(payment?.cf_payment_id || data?.cf_payment_id || '').trim();
+
+    // Recover our ref from order_note
+    const ref =
+      String(order?.order_note || data?.order_note || '').trim();
+
+    const { pack, userId } = parseRef(ref);
+    const safeUserId = userId || 'anon';
+
+    if (cf_payment_id && pack && PACKS[pack] && safeUserId) {
+      await creditPaidOnce({
+        id: `cf:${cf_payment_id}`,
+        userId: safeUserId,
+        coins: PACKS[pack].coins,
+        meta: {
+          pack,
+          via: 'cashfree',
+          cf_payment_id,
+          order_id: String(order?.order_id || data?.order_id || '')
+        }
+      });
+    }
+
+    return res.status(200).json({ ok:true });
+  } catch (e) {
+    console.error('cashfree webhook error', e?.message || e);
+    // acknowledge to stop retries
+    return res.status(200).end();
+  }
+});
+// ---- END /webhook/cashfree ----
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 // Session check: tells frontend if cookie session is alive (14-day rolling)
@@ -2905,51 +3093,61 @@ return res.json({ ok:true, mode: RAZORPAY_KEY_ID.startsWith('rzp_test_') ? 'test
     res.status(500).json({ ok:false, details: e?.response?.data || { message: e.message } });
   }
 });
+app.get('/cashfree/health', limitHealth, (req, res) => {
+  const ok =
+    !!CASHFREE_CLIENT_ID &&
+    !!CASHFREE_CLIENT_SECRET &&
+    !!CASHFREE_WEBHOOK_SECRET;
+
+  return res.json({
+    ok,
+    env: CASHFREE_ENV,
+    hasClientId: !!CASHFREE_CLIENT_ID,
+    hasSecret: !!CASHFREE_CLIENT_SECRET,
+    hasWebhookSecret: !!CASHFREE_WEBHOOK_SECRET
+  });
+});
 // Create a Payment Link for a pack (Daily/Weekly)
 app.post('/buy/:pack', limitBuy, authRequired, verifyCsrf, async (req, res) => {
   const pack = String(req.params.pack || '').toLowerCase();
   const def = PACKS[pack];
   if (!def) return res.status(400).json({ ok:false, error:'bad_pack' });
-  if (!razorpayGate(req, res)) return;
-
-  // fail fast if keys are missing/empty
-  if (!RAZORPAY_KEY_ID || !RAZORPAY_KEY_SECRET) {
-    return res.status(500).json({ ok:false, error:'keys_missing', details:'RAZORPAY_KEY_ID/SECRET not set' });
-  }
 
   const userId    = getUserIdFrom(req);
   const userEmail = String(req.body?.userEmail || '').toLowerCase();
+
   function pickReturnUrl(req) {
-  // 1) If frontend sends returnUrl, accept only if its origin is allowlisted
-  const raw = String(req.body?.returnUrl || "");
-  if (raw) {
-    try {
-      const u = new URL(raw);
-      const o = `${u.protocol}//${u.host}`;
-      if (ALLOWED_ORIGINS.has(o)) return u.toString();
-    } catch {}
+    // 1) If frontend sends returnUrl, accept only if its origin is allowlisted
+    const raw = String(req.body?.returnUrl || "");
+    if (raw) {
+      try {
+        const u = new URL(raw);
+        const o = `${u.protocol}//${u.host}`;
+        if (ALLOWED_ORIGINS.has(o)) return u.toString();
+      } catch {}
+    }
+
+    // 2) Else derive from Origin (best for multi-frontend)
+    const origin = (req.get("origin") || "").trim();
+    if (origin && ALLOWED_ORIGINS.has(origin)) {
+      return `${origin}/chat`;
+    }
+
+    // 3) Else derive from Referer (some flows)
+    const ref = (req.get("referer") || "").trim();
+    if (ref) {
+      try {
+        const o = new URL(ref).origin;
+        if (ALLOWED_ORIGINS.has(o)) return `${o}/chat`;
+      } catch {}
+    }
+
+    // 4) Final safe fallback (never undefined)
+    return `${FRONTEND_URL}/chat`;
   }
 
-  // 2) Else derive from Origin (best for multi-frontend)
-  const origin = (req.get("origin") || "").trim();
-  if (origin && ALLOWED_ORIGINS.has(origin)) {
-    return `${origin}/chat`;
-  }
-
-  // 3) Else derive from Referer (some flows)
-  const ref = (req.get("referer") || "").trim();
-  if (ref) {
-    try {
-      const o = new URL(ref).origin;
-      if (ALLOWED_ORIGINS.has(o)) return `${o}/chat`;
-    } catch {}
-  }
-
-  // 4) Final safe fallback (never undefined)
-  return `${FRONTEND_URL}/chat`;
-}
-  
   const returnUrl = pickReturnUrl(req);
+
   // ✅ unique ref for payment links
   const uniqueRef = makeRef(
     userId,
@@ -2976,13 +3174,57 @@ app.post('/buy/:pack', limitBuy, authRequired, verifyCsrf, async (req, res) => {
     expire_by: Math.floor(Date.now() / 1000) + ORDER_TTL_SEC
   };
 
+  // helper: decide when Razorpay failure should fallback to Cashfree
+  function shouldFallbackToCashfree(err) {
+    // keys missing = treat as "razorpay not usable"
+    if (!RAZORPAY_KEY_ID || !RAZORPAY_KEY_SECRET) return true;
+
+    const status = err?.response?.status;
+    const data = err?.response?.data || {};
+    const msg = String(
+      data?.error?.description || data?.message || err?.message || ''
+    ).toLowerCase();
+
+    // fallback cases (blocked/forbidden/merchant disabled/network/provider down)
+    if ([401, 403, 429, 500, 502, 503, 504].includes(status)) return true;
+
+    if (
+      msg.includes('blocked') ||
+      msg.includes('forbidden') ||
+      msg.includes('not authorized') ||
+      msg.includes('unauthorized') ||
+      msg.includes('merchant') ||
+      msg.includes('suspended') ||
+      msg.includes('disabled') ||
+      msg.includes('ip') ||
+      msg.includes('payment links') ||
+      msg.includes('rate limit') ||
+      msg.includes('timeout')
+    ) return true;
+
+    return false;
+  }
+
   try {
+    // IMPORTANT: If keys missing, throw so we can fallback
+    if (!RAZORPAY_KEY_ID || !RAZORPAY_KEY_SECRET) {
+      const e = new Error('razorpay_keys_missing');
+      e.response = { status: 401, data: { message: 'razorpay keys missing' } };
+      throw e;
+    }
+
     const r = await axios.post(
       'https://api.razorpay.com/v1/payment_links',
       payload,
       { auth: { username: RAZORPAY_KEY_ID, password: RAZORPAY_KEY_SECRET } }
     );
-    return res.json({ ok:true, link_id: r.data.id, short_url: r.data.short_url });
+
+    return res.json({
+      ok:true,
+      gateway:'razorpay',
+      link_id: r.data.id,
+      short_url: r.data.short_url
+    });
 
   } catch (e) {
     const details = e?.response?.data || { message: e.message };
@@ -3003,15 +3245,42 @@ app.post('/buy/:pack', limitBuy, authRequired, verifyCsrf, async (req, res) => {
           { auth: { username: RAZORPAY_KEY_ID, password: RAZORPAY_KEY_SECRET } }
         );
 
-        return res.json({ ok:true, link_id: r2.data.id, short_url: r2.data.short_url });
+        return res.json({
+          ok:true,
+          gateway:'razorpay',
+          link_id: r2.data.id,
+          short_url: r2.data.short_url
+        });
 
       } catch (e2) {
         console.error('retry create payment_link failed:', safeErr(e2));
+        // fall through to fallback decision below
       }
     }
 
-    console.error('buy link create failed:', safeErr(details));
-    return res.status(500).json({ ok:false, error:'create_failed', details });
+    // ✅ Only fallback when Razorpay is "blocked/unusable"
+    if (shouldFallbackToCashfree(e)) {
+      try {
+        // you said you already added these helpers earlier
+        if (!cashfreeGate(req, res)) return;
+
+        const cf = await cashfreeCreateSession({ pack, userId, userEmail, returnUrl });
+
+        return res.json({
+          ok: true,
+          gateway: 'cashfree',
+          short_url: cf.checkoutUrl,
+          order_id: cf.orderId
+        });
+      } catch (cfErr) {
+        console.error('buy cashfree fallback failed:', safeErr(cfErr));
+        return res.status(502).json({ ok:false, error:'cashfree_failed', detail: safeErr(cfErr) });
+      }
+    }
+
+    // ❌ Non-blocked Razorpay errors should NOT fallback
+    console.error('buy link create failed (no fallback):', safeErr(details));
+    return res.status(502).json({ ok:false, error:'razorpay_failed', details });
   }
 });
 // ======== DIRECT CHECKOUT (Orders API) ========
