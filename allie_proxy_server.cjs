@@ -1743,7 +1743,7 @@ app.post('/webhook/razorpay', express.raw({ type: 'application/json' }), async (
 
       // TTL guard removed:
       // We must credit even if paid late, because credits table is idempotent by payment_id.
-      const ref  = link?.reference_id || '';
+      const ref = link?.notes?.ref || link?.reference_id || '';
       const { pack, userId } = parseRef(ref);
       const safeUserId = userId || 'anon';
       const paymentId = event?.payload?.payment?.entity?.id || '';
@@ -3148,31 +3148,38 @@ app.post('/buy/:pack', limitBuy, authRequired, verifyCsrf, async (req, res) => {
 
   const returnUrl = pickReturnUrl(req);
 
-  // ✅ unique ref for payment links
-  const uniqueRef = makeRef(
-    userId,
-    pack,
-    `pl_${Date.now().toString(36)}_${crypto.randomBytes(4).toString('hex')}`
-  );
+  // ✅ FULL ref (can be long) — store inside notes.ref (webhook will read it)
+const fullRef = makeRef(
+  userId,
+  pack,
+  `pl_${Date.now().toString(36)}_${crypto.randomBytes(8).toString('hex')}`
+);
 
-  // ✅ build payload OUTSIDE try so catch can reuse it
-  const payload = {
-    amount: def.amount * 100,  // paise
-    currency: 'INR',
-    accept_partial: false,
-    description: `Shraddha ${pack} pack for ${userEmail || userId}`,
-    customer: userEmail ? { email: userEmail } : undefined,
-    notify: { sms: false, email: RZP_NOTIFY_EMAIL && !!userEmail },
+// ✅ SHORT reference_id (<= 40 chars) — Razorpay requirement
+const shortRef = `bb_${pack}_${Date.now().toString(36)}`.slice(0, 40);
 
-    // ✅ ONLY ONE reference_id and it is UNIQUE
-    reference_id: uniqueRef,
+// ✅ build payload OUTSIDE try so catch can reuse it
+const payload = {
+  amount: def.amount * 100,  // paise
+  currency: 'INR',
+  accept_partial: false,
+  description: `Shraddha ${pack} pack for ${userEmail || userId}`,
+  customer: userEmail ? { email: userEmail } : undefined,
+  notify: { sms: false, email: RZP_NOTIFY_EMAIL && !!userEmail },
 
-    callback_url: returnUrl,
-    callback_method: 'get',
-    reminder_enable: false,
-    notes: { pack, userId },
-    expire_by: Math.floor(Date.now() / 1000) + ORDER_TTL_SEC
-  };
+  // ✅ Razorpay-safe short id
+  reference_id: shortRef,
+
+  callback_url: returnUrl,
+  callback_method: 'get',
+  reminder_enable: false,
+
+  // ✅ IMPORTANT: store your real ref here for webhook crediting
+  notes: { ref: fullRef, pack, userId },
+
+  // ✅ must be safely > 15 minutes (avoid edge failure)
+  expire_by: Math.floor(Date.now() / 1000) + (30 * 60)
+};
 
   // helper: decide when Razorpay failure should fallback to Cashfree
   function shouldFallbackToCashfree(err) {
@@ -3245,7 +3252,7 @@ app.post('/buy/:pack', limitBuy, authRequired, verifyCsrf, async (req, res) => {
 
         const r2 = await axios.post(
           'https://api.razorpay.com/v1/payment_links',
-          { ...payload, reference_id: retryRef },
+          { ...payload, reference_id: `bb_${pack}_${Date.now().toString(36)}`.slice(0, 40) },
           { auth: { username: RAZORPAY_KEY_ID, password: RAZORPAY_KEY_SECRET } }
         );
 
@@ -3400,7 +3407,7 @@ app.post('/verify-payment-link', limitVerify, authRequired, verifyCsrf, async (r
     }
 
    // Always trust Razorpay’s reference_id, not the client body
-const rRef = r?.data?.reference_id || r?.data?.notes?.ref || '';
+const rRef = r?.data?.notes?.ref || r?.data?.reference_id || '';
 const { pack, userId } = parseRef(rRef);
 const safeUserId = userId || 'anon';
 if (!pack) return res.status(400).json({ ok:false, error:'bad_ref' });
@@ -3489,4 +3496,5 @@ app.post('/claim-welcome', authRequired, verifyCsrf, async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
