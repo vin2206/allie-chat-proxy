@@ -3108,6 +3108,7 @@ app.get('/cashfree/health', limitHealth, (req, res) => {
   });
 });
 // Create a Payment Link for a pack (Daily/Weekly)
+// ✅ BUY (Quick Checkout) — Razorpay ORDER (Checkout) with Cashfree fallback
 app.post('/buy/:pack', limitBuy, authRequired, verifyCsrf, async (req, res) => {
   const pack = String(req.params.pack || '').toLowerCase();
   const def = PACKS[pack];
@@ -3117,7 +3118,6 @@ app.post('/buy/:pack', limitBuy, authRequired, verifyCsrf, async (req, res) => {
   const userEmail = String(req.body?.userEmail || '').toLowerCase();
 
   function pickReturnUrl(req) {
-    // 1) If frontend sends returnUrl, accept only if its origin is allowlisted
     const raw = String(req.body?.returnUrl || "");
     if (raw) {
       try {
@@ -3127,13 +3127,9 @@ app.post('/buy/:pack', limitBuy, authRequired, verifyCsrf, async (req, res) => {
       } catch {}
     }
 
-    // 2) Else derive from Origin (best for multi-frontend)
     const origin = (req.get("origin") || "").trim();
-    if (origin && ALLOWED_ORIGINS.has(origin)) {
-      return `${origin}/chat`;
-    }
+    if (origin && ALLOWED_ORIGINS.has(origin)) return `${origin}/chat`;
 
-    // 3) Else derive from Referer (some flows)
     const ref = (req.get("referer") || "").trim();
     if (ref) {
       try {
@@ -3142,48 +3138,20 @@ app.post('/buy/:pack', limitBuy, authRequired, verifyCsrf, async (req, res) => {
       } catch {}
     }
 
-    // 4) Final safe fallback (never undefined)
     return `${FRONTEND_URL}/chat`;
   }
 
   const returnUrl = pickReturnUrl(req);
 
-  // ✅ FULL ref (can be long) — store inside notes.ref (webhook will read it)
-const fullRef = makeRef(
-  userId,
-  pack,
-  `pl_${Date.now().toString(36)}_${crypto.randomBytes(8).toString('hex')}`
-);
-
-// ✅ SHORT reference_id (<= 40 chars) — Razorpay requirement
-const shortRef = `bb_${pack}_${Date.now().toString(36)}`.slice(0, 40);
-
-// ✅ build payload OUTSIDE try so catch can reuse it
-const payload = {
-  amount: def.amount * 100,  // paise
-  currency: 'INR',
-  accept_partial: false,
-  description: `Shraddha ${pack} pack for ${userEmail || userId}`,
-  customer: userEmail ? { email: userEmail } : undefined,
-  notify: { sms: false, email: RZP_NOTIFY_EMAIL && !!userEmail },
-
-  // ✅ Razorpay-safe short id
-  reference_id: shortRef,
-
-  callback_url: returnUrl,
-  callback_method: 'get',
-  reminder_enable: false,
-
-  // ✅ IMPORTANT: store your real ref here for webhook crediting
-  notes: { ref: fullRef, pack, userId },
-
-  // ✅ must be safely > 15 minutes (avoid edge failure)
-  expire_by: Math.floor(Date.now() / 1000) + (30 * 60)
-};
+  // IMPORTANT: store a stable ref inside order notes for crediting
+  const ref = makeRef(
+    userId,
+    pack,
+    `ord_${Date.now().toString(36)}_${crypto.randomBytes(6).toString('hex')}`
+  );
 
   // helper: decide when Razorpay failure should fallback to Cashfree
   function shouldFallbackToCashfree(err) {
-    // keys missing = treat as "razorpay not usable"
     if (!RAZORPAY_KEY_ID || !RAZORPAY_KEY_SECRET) return true;
 
     const status = err?.response?.status;
@@ -3192,7 +3160,6 @@ const payload = {
       data?.error?.description || data?.message || err?.message || ''
     ).toLowerCase();
 
-    // fallback cases (blocked/forbidden/merchant disabled/network/provider down)
     if ([401, 403, 429, 500, 502, 503, 504].includes(status)) return true;
 
     if (
@@ -3204,7 +3171,6 @@ const payload = {
       msg.includes('suspended') ||
       msg.includes('disabled') ||
       msg.includes('ip') ||
-      msg.includes('payment links') ||
       msg.includes('rate limit') ||
       msg.includes('timeout')
     ) return true;
@@ -3213,66 +3179,49 @@ const payload = {
   }
 
   try {
-    // IMPORTANT: If keys missing, throw so we can fallback
     if (!RAZORPAY_KEY_ID || !RAZORPAY_KEY_SECRET) {
       const e = new Error('razorpay_keys_missing');
       e.response = { status: 401, data: { message: 'razorpay keys missing' } };
       throw e;
     }
 
+    // ✅ Razorpay Orders API (Checkout modal expects an order_id)
+    const orderPayload = {
+      amount: Math.round(Number(def.amount) * 100), // paise
+      currency: 'INR',
+      receipt: `bb_${pack}_${Date.now()}`,
+      notes: { ref, pack, userId, userEmail, returnUrl }
+    };
+
     const r = await axios.post(
-      'https://api.razorpay.com/v1/payment_links',
-      payload,
-      { auth: { username: RAZORPAY_KEY_ID, password: RAZORPAY_KEY_SECRET } }
+      'https://api.razorpay.com/v1/orders',
+      orderPayload,
+      {
+        auth: { username: RAZORPAY_KEY_ID, password: RAZORPAY_KEY_SECRET },
+        timeout: 15000
+      }
     );
 
+    const order = r?.data;
+    if (!order?.id) throw new Error('razorpay_order_failed');
+
     return res.json({
-      ok:true,
-      gateway:'razorpay',
-      link_id: r.data.id,
-      short_url: r.data.short_url
+      ok: true,
+      gateway: 'razorpay',
+      mode: 'checkout',
+      key_id: RAZORPAY_KEY_ID,
+      order_id: order.id,
+      amount: order.amount,
+      currency: order.currency,
+      pack,
+      returnUrl
     });
 
   } catch (e) {
-    const details = e?.response?.data || { message: e.message };
-      console.error('BUY FAILED:', {
-    status: e?.response?.status,
-    details
-  });
-    const msg = (details?.error?.description || details?.message || '').toLowerCase();
+    console.error('BUY ORDER FAILED:', safeErr(e));
 
-    // Retry ONCE with fresh unique reference_id (rare)
-    if (msg.includes('reference_id already exists')) {
-      try {
-        const retryRef = makeRef(
-          userId,
-          pack,
-          `pl_${Date.now().toString(36)}_${crypto.randomBytes(4).toString('hex')}`
-        );
-
-        const r2 = await axios.post(
-          'https://api.razorpay.com/v1/payment_links',
-          { ...payload, reference_id: `bb_${pack}_${Date.now().toString(36)}`.slice(0, 40) },
-          { auth: { username: RAZORPAY_KEY_ID, password: RAZORPAY_KEY_SECRET } }
-        );
-
-        return res.json({
-          ok:true,
-          gateway:'razorpay',
-          link_id: r2.data.id,
-          short_url: r2.data.short_url
-        });
-
-      } catch (e2) {
-        console.error('retry create payment_link failed:', safeErr(e2));
-        // fall through to fallback decision below
-      }
-    }
-
-    // ✅ Only fallback when Razorpay is "blocked/unusable"
     if (shouldFallbackToCashfree(e)) {
       try {
-        // you said you already added these helpers earlier
         if (!cashfreeGate(req, res)) return;
 
         const cf = await cashfreeCreateSession({ pack, userId, userEmail, returnUrl });
@@ -3280,6 +3229,7 @@ const payload = {
         return res.json({
           ok: true,
           gateway: 'cashfree',
+          mode: 'redirect',
           short_url: cf.checkoutUrl,
           order_id: cf.orderId
         });
@@ -3289,9 +3239,7 @@ const payload = {
       }
     }
 
-    // ❌ Non-blocked Razorpay errors should NOT fallback
-    console.error('buy link create failed (no fallback):', safeErr(details));
-    return res.status(502).json({ ok:false, error:'razorpay_failed', details });
+    return res.status(502).json({ ok:false, error:'razorpay_failed', details: safeErr(e) });
   }
 });
 // ======== DIRECT CHECKOUT (Orders API) ========
@@ -3496,5 +3444,3 @@ app.post('/claim-welcome', authRequired, verifyCsrf, async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-
-
