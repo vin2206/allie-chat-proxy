@@ -3228,6 +3228,10 @@ app.post('/buy/:pack', limitBuy, authRequired, verifyCsrf, async (req, res) => {
 
   } catch (e) {
     const details = e?.response?.data || { message: e.message };
+      console.error('BUY FAILED:', {
+    status: e?.response?.status,
+    details
+  });
     const msg = (details?.error?.description || details?.message || '').toLowerCase();
 
     // Retry ONCE with fresh unique reference_id (rare)
@@ -3485,3 +3489,4 @@ app.post('/claim-welcome', authRequired, verifyCsrf, async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
