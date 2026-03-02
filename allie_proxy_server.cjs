@@ -1614,19 +1614,20 @@ function selfBase(req) {
   return process.env.SERVER_URL || `${req.protocol}://${req.get('host')}`;
 }
 // CORS allowlist
-// ↑ REPLACE your old allowlist + cors() calls with everything in this block
+// Allows:
+// - fixed production origins from ALLOWED_ORIGINS
+// - Vercel preview domains for UI testing
+//   e.g. https://allie-chat-app-xyz.vercel.app
+//   e.g. https://allie-chat-app-git-branch-user.vercel.app
 
-// Always vary by Origin so CDNs/proxies don't mix responses
 app.use((req, res, next) => {
   res.setHeader('Vary', 'Origin');
   next();
 });
 
-// Domains you permit to read responses (comma-separated in Railway env)
 const ORIGINS = (process.env.ALLOWED_ORIGINS || [
   'https://chat.buddyby.com',
-  // add your local dev origin(s) only when needed, e.g.:
-  // 'http://localhost:5173'
+  'https://love.buddyby.com'
 ].join(','))
   .split(',')
   .map(s => s.trim())
@@ -1634,16 +1635,54 @@ const ORIGINS = (process.env.ALLOWED_ORIGINS || [
 
 const ALLOWED_ORIGINS = new Set(ORIGINS);
 
-// One canonical CORS handler (covers normal + preflight)
+function isAllowedPreviewOrigin(origin = '') {
+  const o = String(origin || '').trim().toLowerCase();
+
+  // only allow https vercel preview-style domains
+  if (!o.startsWith('https://')) return false;
+
+  try {
+    const u = new URL(o);
+    const host = u.hostname.toLowerCase();
+
+    // allow only your project preview domains on vercel
+    return (
+      host.endsWith('.vercel.app') &&
+      (
+        host.startsWith('allie-chat-app-') ||
+        host.startsWith('shraddhachat-') ||
+        host.startsWith('shraddha-love-web-')
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isAllowedOrigin(origin = '') {
+  const o = String(origin || '').trim();
+  return ALLOWED_ORIGINS.has(o) || isAllowedPreviewOrigin(o);
+}
+
 const corsConfig = {
   origin(origin, cb) {
-    // allow same-origin or non-browser clients (no Origin header)
+    // allow same-origin / server-to-server / curl / mobile clients with no Origin
     if (!origin) return cb(null, true);
-    return cb(null, ALLOWED_ORIGINS.has(origin));
+
+    if (isAllowedOrigin(origin)) return cb(null, true);
+
+    return cb(new Error(`CORS blocked for origin: ${origin}`), false);
   },
-  methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
-  credentials: true, // send/accept cookies
-  allowedHeaders: ['Content-Type', 'X-CSRF-Token', 'Authorization', 'X-App-Mode', 'X-Web-Mode', 'X-Guest-Id'],
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  credentials: true,
+  allowedHeaders: [
+    'Content-Type',
+    'X-CSRF-Token',
+    'Authorization',
+    'X-App-Mode',
+    'X-Web-Mode',
+    'X-Guest-Id'
+  ],
   optionsSuccessStatus: 204
 };
 
@@ -3444,3 +3483,4 @@ app.post('/claim-welcome', authRequired, verifyCsrf, async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
