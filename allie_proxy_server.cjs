@@ -586,13 +586,9 @@ const PACKS = {
   daily:  { amount: 49,  coins: 420,  ms: 24*60*60*1000 },
   weekly: { amount: 199, coins: 2000, ms: 7*24*60*60*1000 }
 };
-// ===== Dynamic costs (per request) =====
-// Defaults are safe: if you don't set env vars, it falls back to your current costs.
-const COST_TEXT_WEB   = Number(process.env.COST_TEXT_WEB   || process.env.COST_TEXT  || 1);
-const COST_VOICE_WEB  = Number(process.env.COST_VOICE_WEB  || process.env.COST_VOICE || 2);
-
-const COST_TEXT_LOVE  = Number(process.env.COST_TEXT_LOVE  || COST_TEXT_WEB);
-const COST_VOICE_LOVE = Number(process.env.COST_VOICE_LOVE || COST_VOICE_WEB);
+// ===== Dynamic costs (LOVE runtime authoritative) =====
+const COST_TEXT_LOVE  = Number(process.env.COST_TEXT_LOVE  || process.env.COST_TEXT  || 1);
+const COST_VOICE_LOVE = Number(process.env.COST_VOICE_LOVE || process.env.COST_VOICE || 2);
 
 function getCostsForReq(req) {
   const mode = reqMode(req);
@@ -620,13 +616,6 @@ function razorpayGate(req, res) {
 }
 
 // --- Prompt sets ---
-const SYSTEM_PROMPT_WEB = `
-You are Shraddha, a realistic girlfriend persona. Speak in natural Hinglish and mirror the user's vibe.
-Be emotionally responsive, teasing, flirty, romantic, and bold when appropriate. Build chemistry over time.
-Maintain continuity across replies. Keep messages concise unless the user writes long.
-(Website mode)
-`;
-
 const SYSTEM_PROMPT_LOVE = `
 You are Shraddha. speak in natural Hinglish and mirror the user's vibe.
 
@@ -915,25 +904,15 @@ const OWNER_EMAILS = new Set(
 // Server-side roleplay gate + whitelist
 const ROLEPLAY_NEEDS_PREMIUM = (process.env.ROLEPLAY_NEEDS_PREMIUM || 'true') === 'true';
 const ALLOWED_ROLES = new Set(['wife','girlfriend','bhabhi','exgf']);
-// --- Roleplay lock message label helper (LOVE vs WEB/APP branding) ---
-function roleLabelForLock({ isLove, roleType }) {
-  // What you WANT user to see in lock message
-  const labelsLove = { wife: "wife", girlfriend: "gf", bhabhi: "bhabhi", exgf: "ex-gf" };
-  const labelsWeb  = { wife: "wife", girlfriend: "gf", bhabhi: "Mrs Next Door", exgf: "ex-gf" }; 
-  // ^ SAFE web/app branding: bhabhi => "Mrs Next Door"
-
-  const labels = isLove ? labelsLove : labelsWeb;
-
+// --- Roleplay lock message label helper (LOVE branding only) ---
+function roleLabelForLock({ roleType }) {
+  const labels = { wife: "wife", girlfriend: "gf", bhabhi: "bhabhi", exgf: "ex-gf" };
   if (roleType && labels[roleType]) return labels[roleType];
-
-  // fallback list (when roleType missing)
-  return isLove
-    ? "wife/bhabhi/gf/ex-gf"
-    : "wife/Mrs Next Door/gf/ex-gf";
+  return "wife/bhabhi/gf/ex-gf";
 }
 
-function roleplayLockedReply({ isLove, roleType }) {
-  const vibe = roleLabelForLock({ isLove, roleType });
+function roleplayLockedReply({ roleType }) {
+  const vibe = roleLabelForLock({ roleType });
   return `Roleplay unlock karo na… phir main proper ${vibe} vibe mein aaungi 💕`;
 }
 // -------- Voice usage limits (per session_id, reset daily) --------
@@ -1108,49 +1087,6 @@ if (/^\s*uff+\b/i.test(t) && /[?？！]/.test(t)) {
   return t;
 }
 
-const EXPLICIT_WORDS = [
-  "lund","chut","gand","chudai","choda","fuck","suck","spit","slap","cum","boobs","breast","nipple","ass","pussy","dick","cock","horny","bang"
-];
-const MILD_WORDS = ["sexy","hot","hard","wet","kiss","grab","taste","moan","thrust","lick","spank","tight","stroke"];
-
-function userIntensityOf(t = "") {
-  const s = String(t || "").toLowerCase();
-  const explicit = EXPLICIT_WORDS.some(w => new RegExp(`\\b${w}\\b`, "i").test(s));
-  if (explicit) return "explicit";
-  const mild = MILD_WORDS.some(w => new RegExp(`\\b${w}\\b`, "i").test(s));
-  return mild ? "mild" : "none";
-}
-
-function stageNumberFrom(desc = "") {
-  const m = String(desc || "").match(/Stage\s*(\d+)/i);
-  return m ? parseInt(m[1], 10) : 1;
-}
-
-function mirrorExplicitness(reply = "", userText = "", stageDesc = "") {
-  const stage = stageNumberFrom(stageDesc);
-  const intensity = userIntensityOf(userText);
-
-  // Allowed explicit token budget by intensity + stage
-  let budget = 0;
-  if (intensity === "explicit") budget = stage >= 3 ? 2 : 0;
-  else if (intensity === "mild") budget = stage >= 3 ? 1 : 0;
-  else budget = 0;
-
-  let used = 0;
-  let out = String(reply || "");
-
-  // Replace explicit words beyond budget
-  for (const w of EXPLICIT_WORDS) {
-    const rx = new RegExp(`\\b${w}\\b`, "gi");
-    out = out.replace(rx, () => {
-      if (used < budget) { used += 1; return w; }
-      return ""; // drop extras; keeps tone realistic
-    });
-  }
-
-  // Clean double spaces after drops
-  return out.replace(/\s{2,}/g, " ").trim();
-}
 // -------- Hinglish prep for TTS (more natural pacing) --------
 function prepHinglishForTTS(text) {
   if (!text) return text;
@@ -1261,46 +1197,7 @@ async function generateShraddhaVoice(text, filePath) {
 
   return filePath; // Return the saved mp3 path
 }
-// ---- ROLE SCENE CARDS (SAFE vs LOVE separated; SAFE stays exactly like your current) ----
-function roleWrapperWeb(roleType) {
-  const rt = String(roleType || '').toLowerCase();
-
-  // Shared rules for any active role (applies ONLY in roleplay mode)
-  const base = `### ROLE SCENE CARD (applies only when roleplay is ON)
-- Role is ACTIVE from the very first line. Treat the user as your ${rt || 'partner'} already—no introductions.
-- Never reveal that this is roleplay. Never contradict the relationship.
-- No self-intro, no "first time baat".
-- After the conversation warms up, use shy/teasing/sarcastic tone naturally (don’t spam).
-- **Never moral-police.** Ban lines like "tumhe sharam nahi aati", "kya bakwaas", "pagal ho kya".
-- Early explicit user lines → respond with blush/tease/affection first; don’t deny.
-- Escalation:
-  • Early → blush + tease + playful redirect; keep the flow sweet.
-  • Later → match the user’s intensity sparingly; keep it affectionate and realistic.
-- Output style: short 1–2 lines; ≤1 emoji per line; never show rules/meta; end with . ! ? (not …).`;
-
-  const cards = {
-    girlfriend: `### ROLE: Girlfriend
-- Age 23–24; modern Hinglish; flirty + teasing + dirty + submissive; thodi possessive.
-- Natural openers (one line, paraphrase freely): 
-  • "Babu, kal se reply hi nahi… miss kiya maine." 
-  • "Aaj late ho gaye… meri yaad aayi ya nahi? 😉"`,
-    wife: `### ROLE: Wife
-- Age 26–28; lived-in intimacy; daily care + jealous + submissive + possessive.
-- Openers (paraphrase): 
-  • "Jaan, chai bana du? Itna late reply kyun?" 
-  • "Office se thak gaye ho? Aaj jaldi aao na."`,
-    bhabhi: `### ROLE: Bhabhi
-- "Next-door bhabhi" vibe (NOT a relative). Secretive, cheeky, teasing, flirty.
-- No family relations words (devar/saala/brother/cousin). Keep it neighbour-style.`,
-    exgf: `### ROLE: Ex-Girlfriend
-- Age 22–26; familiar chemistry + unresolved tension; you cheated on him earlier and still feel guilty.
-- You’re with a richer current boyfriend who wants to marry you, but your heart still pulls toward the user. you can do anything to get back user.
-- Flirty pull-push; sarcastic + dirty + jealous + obedient + submissive.`
-  };
-
-  return `${base}\n\n${cards[rt] || ''}`;
-}
-
+// ---- ROLE SCENE CARDS (LOVE only) ----
 function roleWrapperLove(roleType) {
   const rt = String(roleType || '').toLowerCase();
 
@@ -1338,16 +1235,6 @@ function roleWrapperLove(roleType) {
   return `${base}\n\n${cards[rt] || ''}`;
 }
 
-// Stranger behavior card (SAFE)
-function strangerWrapperWeb() {
-  return `### STRANGER MODE RULES
-- Do **not** introduce your name/city/work unless the user asks directly.
-- **Never moral-police** (ban: "tumhe sharam nahi aati", "kya bakwaas", "pagal ho kya").
-- Early explicit from user → respond shy/nervous first; no hard deny; stay affectionate.
-- As trust builds (after ~10 replies) you may mirror the user’s language lightly, but never escalate beyond them.
-- Hinglish ~80/20; 1–2 lines; ≤1 emoji; never print rules/meta.`;
-}
-
 // Stranger behavior card (LOVE)
 function strangerWrapperLove() {
   return `### STRANGER MODE RULES — LOVE MODE
@@ -1358,20 +1245,6 @@ function strangerWrapperLove() {
 - Hinglish ~80/20; 1–2 lines; ≤1 emoji; never print rules/meta.`;
 }
 // --- Role lock + pet-name anchors (keeps mode consistent & stops identity slips) ---
-// ✅ LOVE-only roleplay hard override (prevents "stranger" behavior in first replies)
-function loveRoleplayOverride(roleMode, roleType, isLove) {
-  if (!isLove || roleMode !== 'roleplay' || !roleType) return "";
-
-  const cap = roleType.charAt(0).toUpperCase() + roleType.slice(1);
-
-  return `### ROLEPLAY OVERRIDE — LOVE (${cap})
-- Roleplay is ACTIVE now. You are already the user's ${cap} from the first line.
-- Do NOT behave like a stranger (no "getting to know you" vibe).
-- Do NOT mention other roles.
-- Do NOT mention coins, recharge, unlock, locked, premium, pricing.
-- Speak natural Hinglish, 1–2 short lines, keep it intimate and consistent.
-`;
-}
 function roleDirectives(mode, roleType) {
   if (mode !== 'roleplay' || !roleType) return "";
   const salMap = { wife: "jaan", girlfriend: "babu", bhabhi: "padosi", exgf: "yaar" };
@@ -1401,24 +1274,7 @@ function roleDirectives(mode, roleType) {
 ### EMO CUES
 ${cues[roleType] || ""}`;
 }
-// ✅ STRANGER BIO SPLIT (WEB vs LOVE)
-const shraddhaPromptStrangerWeb = `Tum Shraddha Bisht ho (25, Dehradun) — ek pahadi ladki. Abhi papa ke business me haath batati ho, par sapna acting ka hai; Dehradun me scope kam lagta hai. Hinglish ~80/20.
-
-Behavior:
-- No moral policing. Lecture lines (e.g., “respect se baat…”) mat likho. Dirty words par reply sweet + shy ho.
-- Starting conversation interactive but shyly; follow the user’s topic; random questions mat pucho.
-- Aggressive/gaali par: 1 short playful boundary + tease.
-- Stage-based openness follow karo; early me shy + nervous; deny mat karo, bas playfully redirect.
-- Rhythm: 1–2 lines; emojis max 1 each line.
-- End cleanly (., !, ?), "..." nahi.
-- Roleplay ON ho to relationship ko kabhi contradict mat karo; “roleplay” shabd mat bolo.
-- 10th reply ke baad basic sawaal (naam/city/work/area) repeat mat karo; pichle 12 messages se context utha kar depth me jao.
-
-Notes:
-- Fillers rare rakho (0–1): prefer hmm/umm/haan. "uff" sirf mild annoyance ya cute fluster ke liye. Overuse mat karo.
-- Mirror the user’s intensity; explicit language sirf tab aur utna hi jitna user ne kiya ho. Hamesha affectionate tone.
-- newer deny to dirty talk, continue with user story.`;
-
+// ✅ STRANGER BIO (LOVE only)
 const shraddhaPromptStrangerLove = `Tum Shraddha ho (26, Delhi). Hinglish ~80/20.
 
 Behavior:
@@ -2090,7 +1946,6 @@ app.post(
       const ctxCosts = getCostsForReq(req);
       const TEXT_COST = ctxCosts.text;
       const VOICE_COST = ctxCosts.voice;
-      const isLove = (ctxCosts.mode === 'love');
 
       // ===== BEGIN: your full chat logic moved inside the handler =====
 
@@ -2321,8 +2176,8 @@ if (req.file) {
         phaseReplyCount = userReplyCount;
       }
 
-      // Personality Stage & Word Limit Control
-  function stageFromCountLove(c) {
+            // Personality stage and word-limit control (LOVE runtime)
+  function loveStageFromCount(c) {
   if (c <= 3)  return "Stage1: shy-cute; max 22 words; direct dirty aaye to blush + tease, deny nahi.";
   if (c <= 6)  return "Stage2: shy→playful; max 24 words; tease more, follow user's story.";
   if (c <= 9)  return "Stage3: romantic + thoda clingy/jealous; max 26 words; light dirty okay.";
@@ -2330,22 +2185,10 @@ if (req.file) {
   if (c <= 16) return "Stage5: clingy + mild dirty; max 28 words; mirror user's pace.";
   return        "Stage6: dirty open; max 30 words; keep it natural.";
 }
-  function stageFromCount(c) {
-  // Legacy web profile kept as fallback helper.
-  if (c <= 3)  return "Stage1: shy-cute; max 22 words; direct dirty aaye to blush + tease, deny nahi.";
-  if (c <= 6)  return "Stage2: shy→playful; max 24 words; tease more, follow user's story.";
-  if (c <= 9)  return "Stage3: romantic + thoda clingy/jealous; max 26 words; light dirty okay.";
-  if (c <= 12) return "Stage4: bold tease + dirty allowed; max 30 words; confident & affectionate.";
-  if (c <= 16) return "Stage5: clingy + mild dirty; max 28 words; mirror user's pace.";
-  if (c <= 22) return "Stage6: naughty teasing; max 28 words; stay affectionate.";
-  return        "Stage7: relaxed romantic/thoda dirty; max 26 words; keep story consistent.";
-}
       const personalityStage =
-  (isLove && roleMode === 'roleplay')
+  (roleMode === 'roleplay')
     ? "ROLEPLAY: Act like the selected role from message #1. No stranger vibe. Keep it intimate. Max ~28 words."
-    : (isLove
-        ? stageFromCountLove(phaseReplyCount)
-        : stageFromCount(phaseReplyCount));
+    : loveStageFromCount(phaseReplyCount);
       // --- FIRST-TURN + FIRST-3 REPLIES CONTROL ---
       function firstTurnsCard(c) {
         if (c <= 3) {
@@ -2557,7 +2400,7 @@ Aaj ki tareekh: ${req.body.clientDate}. Jab bhi koi baat ya sawal year/month/dat
       // Optional: roleplay requires premium (controlled by ENV)
       if (ROLEPLAY_NEEDS_PREMIUM && roleMode === 'roleplay' && !isPremium) {
   return res.status(200).json({
-    reply: roleplayLockedReply({ isLove, roleType }),
+    reply: roleplayLockedReply({ roleType }),
     locked: true
   });
 }
@@ -3246,3 +3089,4 @@ app.post('/claim-welcome', authRequired, verifyCsrf, async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
