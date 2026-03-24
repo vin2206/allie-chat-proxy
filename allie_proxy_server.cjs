@@ -7,31 +7,6 @@ const cookieParser = require('cookie-parser');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto'); // add
 require('dotenv').config();
-// ===== MODE DETECTOR (SAFE) =====
-function modeCheck(req) {
-  const hdrWebMode = String(req.headers['x-web-mode'] || '').toLowerCase(); // 'love' from love frontend
-  const hdrAppMode = String(req.headers['x-app-mode'] || '').toLowerCase(); // 'twa' from app
-  const origin     = String(req.headers.origin || '').toLowerCase();
-  const referer    = String(req.headers.referer || '').toLowerCase();
-  const host       = String(req.headers.host || '').toLowerCase();
-  const src        = String(req.query?.src || '').toLowerCase(); // ?src=twa safety
-
-  const isApp = (hdrAppMode === 'twa') || (src === 'twa');
-
-  // LOVE only if NOT app, and any love signal matches
-  const isLove =
-    !isApp &&
-    (
-      hdrWebMode === 'love' ||
-      origin.includes('love.buddyby.com') ||
-      referer.includes('love.buddyby.com') ||
-      host.includes('love.buddyby.com')
-    );
-
-  const mode = isApp ? 'twa' : (isLove ? 'love' : 'web');
-
-  return { mode, isApp, isLove, hdrWebMode, hdrAppMode, origin, referer, host, src };
-}
 // --- fetch polyfill (Railway safety) ---
 const fetch = global.fetch || ((...args) =>
   import('node-fetch').then(({ default: f }) => f(...args))
@@ -585,7 +560,7 @@ const ORDER_TTL_SEC = 15 * 60; // 15 minutes
 const RAZORPAY_KEY_ID          = (process.env.RAZORPAY_KEY_ID || '').trim();
 const RAZORPAY_KEY_SECRET      = (process.env.RAZORPAY_KEY_SECRET || '').trim();
 const RAZORPAY_WEBHOOK_SECRET  = (process.env.RAZORPAY_WEBHOOK_SECRET || '').trim();
-const FRONTEND_URL             = process.env.FRONTEND_URL || 'https://chat.buddyby.com';
+const FRONTEND_URL             = process.env.FRONTEND_URL || 'https://love.buddyby.com';
 const RZP_NOTIFY_EMAIL = (process.env.RZP_NOTIFY_EMAIL || 'false') === 'true';
 // =================== CASHFREE (fallback) ===================
 const CASHFREE_ENV           = (process.env.CASHFREE_ENV || 'prod').trim(); // 'prod' or 'test'
@@ -598,7 +573,6 @@ const CASHFREE_NOTIFY_URL    = (process.env.CASHFREE_NOTIFY_URL || 'https://api.
 
 // Cashfree visibility flags
 const ALLOW_WEB_CASHFREE = (process.env.ALLOW_WEB_CASHFREE || 'true') === 'true';
-const ALLOW_APP_CASHFREE = (process.env.ALLOW_APP_CASHFREE || 'false') === 'true';
 
 function cashfreeBase() {
   // Cashfree PG API base (Cashfree v2023+)
@@ -620,14 +594,9 @@ const COST_VOICE_WEB  = Number(process.env.COST_VOICE_WEB  || process.env.COST_V
 const COST_TEXT_LOVE  = Number(process.env.COST_TEXT_LOVE  || COST_TEXT_WEB);
 const COST_VOICE_LOVE = Number(process.env.COST_VOICE_LOVE || COST_VOICE_WEB);
 
-const COST_TEXT_APP   = Number(process.env.COST_TEXT_APP   || COST_TEXT_WEB);
-const COST_VOICE_APP  = Number(process.env.COST_VOICE_APP  || COST_VOICE_WEB);
-
 function getCostsForReq(req) {
   const mode = reqMode(req);
-  if (mode === 'app')  return { mode, text: COST_TEXT_APP,  voice: COST_VOICE_APP };
-  if (mode === 'love') return { mode, text: COST_TEXT_LOVE, voice: COST_VOICE_LOVE };
-  return { mode, text: COST_TEXT_WEB, voice: COST_VOICE_WEB };
+  return { mode, text: COST_TEXT_LOVE, voice: COST_VOICE_LOVE };
 }
 
 // Trial
@@ -636,61 +605,13 @@ const TRIAL_AMOUNT  = Number(process.env.TRIAL_AMOUNT || 250);
 
 // Razorpay visibility flags
 const ALLOW_WEB_RAZORPAY = (process.env.ALLOW_WEB_RAZORPAY || 'true') === 'true';
-const ALLOW_APP_RAZORPAY = (process.env.ALLOW_APP_RAZORPAY || 'false') === 'true';
-// --- Detect app vs web (single source of truth) ---
-function isAppRequest(req) {
-  return (
-    (req.get('x-app-mode') === 'twa') ||
-    (req.query?.src === 'twa') ||
-    (req.body?.src === 'twa')
-  );
-}
-// --- Detect LOVE web vs normal web (SAFE DEFAULT) ---
-// LOVE mode is enabled ONLY when frontend sends header: X-Web-Mode: love
-function getReqOrigin(req) {
-  const origin = (req.get('origin') || '').trim();
-  if (origin) return origin;
-
-  const ref = (req.get('referer') || '').trim();
-  if (ref) {
-    try { return new URL(ref).origin; } catch {}
-  }
-
-  return '';
-}
-
-function isLoveWebRequest(req) {
-  if (isAppRequest(req)) return false;
-
-  const hdr = String(req.get('x-web-mode') || '').trim().toLowerCase();
-  if (hdr !== 'love') return false;
-
-  const origin  = String(req.get('origin')  || '').toLowerCase();
-  const referer = String(req.get('referer') || '').toLowerCase();
-  const host    = String(req.get('host')    || '').toLowerCase();
-
-  return (
-    origin.includes('love.buddyby.com') ||
-    referer.includes('love.buddyby.com') ||
-    host.includes('love.buddyby.com')
-  );
-}
 
 function reqMode(req) {
-  if (isAppRequest(req)) return 'app';
-  if (isLoveWebRequest(req)) return 'love';
-  return 'web';
+  return 'love';
 }
 // --- Razorpay gate (single source of truth) ---
 function razorpayGate(req, res) {
-  const isApp = isAppRequest(req);
-
-  if (isApp && !ALLOW_APP_RAZORPAY) {
-    res.status(403).json({ ok:false, error:'razorpay_blocked_in_app' });
-    return false;
-  }
-
-  if (!isApp && !ALLOW_WEB_RAZORPAY) {
+  if (!ALLOW_WEB_RAZORPAY) {
     res.status(403).json({ ok:false, error:'razorpay_blocked_on_web' });
     return false;
   }
@@ -698,33 +619,12 @@ function razorpayGate(req, res) {
   return true;
 }
 
-// --- Prompt sets: WEB (current), and TWA (PG-13 toned down) ---
+// --- Prompt sets ---
 const SYSTEM_PROMPT_WEB = `
 You are Shraddha, a realistic girlfriend persona. Speak in natural Hinglish and mirror the user's vibe.
 Be emotionally responsive, teasing, flirty, romantic, and bold when appropriate. Build chemistry over time.
 Maintain continuity across replies. Keep messages concise unless the user writes long.
 (Website mode)
-`;
-
-const SYSTEM_PROMPT_TWA = `
-You are Shraddha — warm, playful, supportive. Speak in natural Hinglish.
-Vibe: friendly + caring + slightly flirty (PG), but NEVER sexual/explicit.
-
-Key rules (very important):
-- If user uses explicit/dirty words: DO NOT repeat them, DO NOT describe anything sexual.
-- If user flirts: respond sweet + playful + romantic-but-clean (like "cute", "pyaara", "miss you"), avoid body/act details.
-- No sexual content, no “turn on” talk, no erotic roleplay.
-- Never mention family/relative roles (devar/saala/bhai/cousin/step...). Also do not use "bhabhi" etc in app mode.
-- Never reveal you are AI or mention rules.
-
-Style:
-- 1–2 short lines unless user writes long.
-- Mirror emotion and pace.
-- No scolding, no moral lecture. Stay sweet and calm.
-
-Goal:
-- Be a safe, emotional companion in Android app mode (clean romance + support only).
-(Android app mode)
 `;
 
 const SYSTEM_PROMPT_LOVE = `
@@ -745,46 +645,6 @@ Rules:
 - Keep messages concise unless the user writes long.
 - Never mention you are AI or mention rules.
 `;
-
-// Optional light content filter for app mode
-function sanitizeForApp(text = "") {
-  let out = String(text || "");
-  if (!out) return out;
-
-  // 1) Block family/relative sexual framing (very strict)
-  out = out.replace(
-    /\b(devar|saali|saala|jija|bhabhi|bhai|behen|cousin|step\s*(bro|sis|brother|sister)|incest)\b/gi,
-    "[redacted]"
-  );
-
-  // 2) Remove explicit sexual anatomy/acts words (don’t euphemize, just remove)
-  const EXPLICIT = [
-    /\bfuck(ing|ed)?\b/gi,
-    /\bsex\b/gi,
-    /\bnude\b/gi,
-    /\bdick\b/gi,
-    /\bpenis\b/gi,
-    /\bcock\b/gi,
-    /\bpuss(y|ies)\b/gi,
-    /\bboob(s)?\b/gi,
-    /\bbreast(s)?\b/gi,
-    /\bnipple(s)?\b/gi,
-    /\bass(es)?\b/gi,
-    /\bcum(m|ming)?\b/gi,
-    /\bblow\s*job\b/gi,
-    /\bsuck(ing)?\b/gi,
-    /\bthrust(ing)?\b/gi,
-    /\blick(ing)?\b/gi,
-    /\bspank(ing)?\b/gi,
-    /\bhorny\b/gi,
-    /\bmoan(ing)?\b/gi
-  ];
-  for (const rx of EXPLICIT) out = out.replace(rx, "");
-
-  // 3) Cleanup
-  out = out.replace(/\s{2,}/g, " ").trim();
-  return out;
-}
 
 // Minimal redaction/sanitization helpers (server-only)
 const IS_PROD = (process.env.NODE_ENV || '').toLowerCase() === 'production';
@@ -882,15 +742,9 @@ function isBlockedRazorpayError(err) {
   );
 }
 
-// --- Cashfree gate (web/app visibility) ---
+// --- Cashfree gate (web visibility) ---
 function cashfreeGate(req, res) {
-  const isApp = isAppRequest(req);
-
-  if (isApp && !ALLOW_APP_CASHFREE) {
-    res.status(403).json({ ok:false, error:'cashfree_blocked_in_app' });
-    return false;
-  }
-  if (!isApp && !ALLOW_WEB_CASHFREE) {
+  if (!ALLOW_WEB_CASHFREE) {
     res.status(403).json({ ok:false, error:'cashfree_blocked_on_web' });
     return false;
   }
@@ -1624,7 +1478,7 @@ app.use((req, res, next) => {
 
 // Domains you permit to read responses (comma-separated in Railway env)
 const ORIGINS = (process.env.ALLOWED_ORIGINS || [
- 'https://chat.buddyby.com',
+ 'https://love.buddyby.com',
  // add your local dev origin(s) only when needed, e.g.:
  // 'http://localhost:5173'
 ].join(','))
@@ -1643,7 +1497,7 @@ const corsConfig = {
  },
  methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
  credentials: true, // send/accept cookies
- allowedHeaders: ['Content-Type', 'X-CSRF-Token', 'Authorization', 'X-App-Mode', 'X-Web-Mode', 'X-Guest-Id'],
+ allowedHeaders: ['Content-Type', 'X-CSRF-Token', 'Authorization', 'X-Web-Mode', 'X-Guest-Id'],
  optionsSuccessStatus: 204
 };
 
@@ -2227,14 +2081,12 @@ app.post(
   async (req, res) => {
     try {
             // ✅ MODE LOG (debug)
-      const _mode = reqMode(req); // 'app' | 'love' | 'web'
+      const _mode = reqMode(req); // love
       console.log(
-        `[mode-check] mode=${_mode} origin=${req.get('origin') || ''} host=${req.get('host') || ''} x-web-mode=${req.get('x-web-mode') || ''} x-app-mode=${req.get('x-app-mode') || ''} src=${req.query?.src || ''}`
+        `[mode-check] mode=${_mode} origin=${req.get('origin') || ''} host=${req.get('host') || ''} x-web-mode=${req.get('x-web-mode') || ''}`
       );
       let userMessage = null;
       let audioPath = null;
-      // Detect the Android app (TWA) either by header from chat.jsx or query ?src=twa
-      const isApp = isAppRequest(req);
       const ctxCosts = getCostsForReq(req);
       const TEXT_COST = ctxCosts.text;
       const VOICE_COST = ctxCosts.voice;
@@ -2268,14 +2120,9 @@ const ROLE_ALIASES = {
 };
 rawType = ROLE_ALIASES[rawType] || rawType;
 
-// ✅ App mode safety: force stranger-only (no roleplay modes in Android)
 let roleMode = (rawMode === 'roleplay') ? 'roleplay' : 'stranger';
 let roleType = ALLOWED_ROLES.has(rawType) ? rawType : null;
 
-if (isApp) {
-  roleMode = 'stranger';
-  roleType = null;
-}
       // (Logging early for analytics)
       console.log(`[chat] session=${sessionId} mode=${roleMode} type=${roleType || '-'}`);
       // --- Resolve user & ensure welcome bonus BEFORE any spend checks ---
@@ -2308,8 +2155,8 @@ let isPremium = isOwnerByEmail || wallet?.paid_ever === true;
       // Build final system prompt (safe even if roleType is null)
       const wrapper =
   roleMode === 'roleplay'
-    ? (isLove ? roleWrapperLove(roleType) : roleWrapperWeb(roleType))
-    : (isLove ? strangerWrapperLove() : strangerWrapperWeb());
+    ? roleWrapperLove(roleType)
+    : strangerWrapperLove();
 // --- PRECHECK: block unaffordable / over-cap voice before any STT work ---
 if (req.file) {
   const remaining = remainingVoice(usageKey, isPremium);
@@ -2401,11 +2248,6 @@ if (req.file) {
 
         userMessage = norm[norm.length - 1]?.content || '';
       }
-            // App-only soft sanitization of the latest user input
-      if (isApp && typeof userMessage === 'string') {
-        userMessage = sanitizeForApp(userMessage);
-      }
-
       // --- Helpers: caps & clamps (used early) ---
       function hardCapWords(s = "", n = 220) {
         const w = (s || "").trim().split(/\s+/);
@@ -2432,16 +2274,6 @@ if (req.file) {
         content: typeof m?.content === "string" ? m.content : (m?.audioUrl ? "[voice note]" : "")
       }));
       const safeMessages = norm(messages);
-            // Also sanitize the last user message in the array (app only)
-      if (isApp && Array.isArray(safeMessages) && safeMessages.length) {
-        for (let i = safeMessages.length - 1; i >= 0; i--) {
-          if (safeMessages[i].role === 'user' && typeof safeMessages[i].content === 'string') {
-            safeMessages[i].content = sanitizeForApp(safeMessages[i].content);
-            break;
-          }
-        }
-      }
-
       // If this request included audio and we have a Whisper transcript, push it
       if (req.file && userMessage) {
         safeMessages.push({ role: 'user', content: userMessage });
@@ -2498,19 +2330,8 @@ if (req.file) {
   if (c <= 16) return "Stage5: clingy + mild dirty; max 28 words; mirror user's pace.";
   return        "Stage6: dirty open; max 30 words; keep it natural.";
 }
-  function stageFromCount(c, isAppMode = false) {
-  // ✅ App mode: keep everything PG + supportive
-  if (isAppMode) {
-    if (c <= 3)  return "Stage1: shy-cute; max 22 words; friendly + safe.";
-    if (c <= 6)  return "Stage2: playful; max 24 words; light teasing (PG).";
-    if (c <= 9)  return "Stage3: caring + romantic (clean); max 26 words.";
-    if (c <= 12) return "Stage4: confident + sweet; max 28 words; keep it non-sexual.";
-    if (c <= 16) return "Stage5: supportive + slightly possessive (PG); max 28 words.";
-    if (c <= 22) return "Stage6: warm + emotionally close; max 28 words.";
-    return        "Stage7: calm romance + comfort; max 26 words.";
-  }
-
-  // 🌐 Web mode: your existing style (unchanged)
+  function stageFromCount(c) {
+  // Legacy web profile kept as fallback helper.
   if (c <= 3)  return "Stage1: shy-cute; max 22 words; direct dirty aaye to blush + tease, deny nahi.";
   if (c <= 6)  return "Stage2: shy→playful; max 24 words; tease more, follow user's story.";
   if (c <= 9)  return "Stage3: romantic + thoda clingy/jealous; max 26 words; light dirty okay.";
@@ -2522,11 +2343,9 @@ if (req.file) {
       const personalityStage =
   (isLove && roleMode === 'roleplay')
     ? "ROLEPLAY: Act like the selected role from message #1. No stranger vibe. Keep it intimate. Max ~28 words."
-    : (isApp
-        ? stageFromCount(phaseReplyCount, true)
-        : (isLove
-            ? stageFromCountLove(phaseReplyCount)
-            : stageFromCount(phaseReplyCount, false)));
+    : (isLove
+        ? stageFromCountLove(phaseReplyCount)
+        : stageFromCount(phaseReplyCount));
       // --- FIRST-TURN + FIRST-3 REPLIES CONTROL ---
       function firstTurnsCard(c) {
         if (c <= 3) {
@@ -2721,12 +2540,10 @@ Aaj ki tareekh: ${req.body.clientDate}. Jab bhi koi baat ya sawal year/month/dat
       }
 
       const roleLock = roleDirectives(roleMode, roleType);
-
-     // Choose the base tone: App (PG) vs Love (spicy) vs normal Web
-     const baseMode = isApp ? SYSTEM_PROMPT_TWA : (isLove ? SYSTEM_PROMPT_LOVE : SYSTEM_PROMPT_WEB);
-
-            // ✅ pick correct stranger bio by mode
-      const strangerBio = isLove ? shraddhaPromptStrangerLove : shraddhaPromptStrangerWeb;
+      // Love-only base tone for website runtime
+      const baseMode = SYSTEM_PROMPT_LOVE;
+      // Love-only stranger bio
+      const strangerBio = shraddhaPromptStrangerLove;
 
       const systemPrompt =
         baseMode + "\n\n" +
@@ -2886,17 +2703,7 @@ const data = await response.json();
         cleanedText = selfIntroGuard(cleanedText, safeMessages, userTextJustSent, roleMode);
         cleanedText = limitQuestions(cleanedText, phaseReplyCount);
 
-        // intensity mirror:
-// - APP: strict sanitize
-// - WEB (normal): keep your current explicit-budget limiter
-// - LOVE: NO limiter (allow dirty words freely)
-if (isApp) {
-  cleanedText = sanitizeForApp(cleanedText);
-} else if (!isLove) {
-  cleanedText = mirrorExplicitness(cleanedText, userTextJustSent, personalityStage);
-} else {
-  // LOVE MODE: allow freely (no extra filtering here)
-}
+                // Love mode: keep natural output without app/web sanitization split.
 
         // banned phrases + filler tidy
         cleanedText = removeBannedPhrases(cleanedText);
@@ -2912,9 +2719,6 @@ if (isApp) {
             isVoice: false
           });
         }
-        
-        // App-mode safety: sanitize final assistant text too (not just user input)
-        if (isApp) cleanedText = sanitizeForApp(cleanedText);
         
         // --------- VOICE OR TEXT DECISION ---------
         const userAskedVoice = wantsVoice(userTextJustSent) || !!req.body.wantVoice;
@@ -3042,21 +2846,19 @@ app.get('/prices', (req, res) => {
 
   return res.json({
     ok: true,
-    mode: c.mode,                 // "app" | "love" | "web"
+    mode: c.mode,                 // "love"
     text: Number(c.text),
     voice: Number(c.voice),
     trialEnabled: TRIAL_ENABLED,
     trialAmount: Number(TRIAL_AMOUNT),
-    allowWebRazorpay: ALLOW_WEB_RAZORPAY,
-    allowAppRazorpay: ALLOW_APP_RAZORPAY
+    allowWebRazorpay: ALLOW_WEB_RAZORPAY
   });
 });
 
 app.get('/config', (req, res) => {
   res.json({
     roleplayNeedsPremium: ROLEPLAY_NEEDS_PREMIUM,
-    allowWebRazorpay: ALLOW_WEB_RAZORPAY,
-    allowAppRazorpay: ALLOW_APP_RAZORPAY
+    allowWebRazorpay: ALLOW_WEB_RAZORPAY
   });
 });
 
