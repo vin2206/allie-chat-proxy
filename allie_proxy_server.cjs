@@ -12,7 +12,7 @@ const fetch = global.fetch || ((...args) =>
   import('node-fetch').then(({ default: f }) => f(...args))
 );
 // ===== WALLET DB (BEGIN) =====
-const { query } = require('./db.cjs');
+const { query, pool } = require('./db.cjs');
 // ===== DELETE ACCOUNT (BEGIN) =====
 
 // Admin Basic Auth (set in Railway env)
@@ -314,70 +314,90 @@ function guestHintFromReq(req) {
 
   return '';
 }
+
+async function withDbTx(work) {
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    const out = await work(client);
+    await client.query('commit');
+    return out;
+  } catch (e) {
+    try { await client.query('rollback'); } catch {}
+    throw e;
+  } finally {
+    client.release();
+  }
+}
 // One-time trial credit, enforced per-device + per-user (NO paid_ever)
 async function grantTrialOnce({ userId, origin = "guest", deviceId = "" }) {
   if (!TRIAL_ENABLED) return await getOrCreateWallet(userId);
 
   const dev = String(deviceId || "").toLowerCase();
   const deviceCreditId = /^dev_[a-f0-9]{32}$/.test(dev) ? `device_trial:${dev}` : null;
-
-  // 1) If this device already claimed welcome, do NOT grant again (even for new userId)
-  if (deviceCreditId) {
-    const already = await query(`select 1 from credits where id = $1`, [deviceCreditId]);
-    if (already.rowCount) return await getOrCreateWallet(userId);
-  }
-
-  // 2) Keep your existing per-user idempotence too
   const userTrialId = `trial:${userId}`;
-  const existing = await query(`select 1 from credits where id = $1`, [userTrialId]);
-  if (existing.rowCount) {
-    // optional: ensure device marker exists even if user already had trial
-    if (deviceCreditId) {
-      await query(
-        `insert into credits (id, user_id, coins, meta)
-         values ($1,$2,0,$3)
-         on conflict (id) do nothing`,
-        [deviceCreditId, userId, { source: 'trial_device_marker', origin }]
-      );
-    }
-    return await getOrCreateWallet(userId);
-  }
 
-  // 3) Grant trial once + write the device marker (0 coins) in same transaction
-  await query('begin');
-  try {
-    // device marker first (0 coins)
-    if (deviceCreditId) {
-      await query(
-        `insert into credits (id, user_id, coins, meta)
-         values ($1,$2,0,$3)
-         on conflict (id) do nothing`,
-        [deviceCreditId, userId, { source: 'trial_device_marker', origin }]
-      );
+  return await withDbTx(async (tx) => {
+    // Ensure wallet row exists within the same transaction.
+    await tx.query(
+      `insert into wallets (user_id) values ($1)
+       on conflict (user_id) do nothing`,
+      [userId]
+    );
+
+    // Per-user idempotence first.
+    const existing = await tx.query(`select 1 from credits where id = $1`, [userTrialId]);
+    if (existing.rowCount) {
+      // Optional marker backfill for guest-device lock.
+      if (deviceCreditId) {
+        await tx.query(
+          `insert into credits (id, user_id, coins, meta)
+           values ($1,$2,0,$3)
+           on conflict (id) do nothing`,
+          [deviceCreditId, userId, { source: 'trial_device_marker', origin }]
+        );
+      }
+      const { rows } = await tx.query(`select * from wallets where user_id = $1`, [userId]);
+      return rows[0];
     }
 
-    // actual trial credit
-    await query(
+    // Per-device gate for guest flow: if this insert loses conflict, this device already claimed.
+    if (deviceCreditId) {
+      const marked = await tx.query(
+        `insert into credits (id, user_id, coins, meta)
+         values ($1,$2,0,$3)
+         on conflict (id) do nothing
+         returning id`,
+        [deviceCreditId, userId, { source: 'trial_device_marker', origin }]
+      );
+      if (!marked.rowCount) {
+        const { rows } = await tx.query(`select * from wallets where user_id = $1`, [userId]);
+        return rows[0];
+      }
+    }
+
+    // Actual trial credit: conflict-safe so repeated calls are harmless.
+    const granted = await tx.query(
       `insert into credits (id, user_id, coins, meta)
-       values ($1,$2,$3,$4)`,
+       values ($1,$2,$3,$4)
+       on conflict (id) do nothing
+       returning id`,
       [userTrialId, userId, TRIAL_AMOUNT, { source: 'trial', origin, device: dev || null }]
     );
 
-    await query(
-      `update wallets
-         set coins = coins + $2,
-             updated_at = now()
-       where user_id = $1`,
-      [userId, TRIAL_AMOUNT]
-    );
+    if (granted.rowCount) {
+      await tx.query(
+        `update wallets
+           set coins = coins + $2,
+               updated_at = now()
+         where user_id = $1`,
+        [userId, TRIAL_AMOUNT]
+      );
+    }
 
-    await query('commit');
-  } catch (e) {
-    await query('rollback');
-    throw e;
-  }
-
-  return await getOrCreateWallet(userId);
+    const { rows } = await tx.query(`select * from wallets where user_id = $1`, [userId]);
+    return rows[0];
+  });
 }
 
 // Merge guest wallet -> Google wallet (idempotent, safe)
@@ -385,15 +405,14 @@ async function mergeWallets({ fromUserId, toUserId }) {
   if (!fromUserId || !toUserId) return;
   if (fromUserId === toUserId) return;
 
-  await query('begin');
-  try {
+  await withDbTx(async (tx) => {
     // ensure both wallets exist
-    await query(`insert into wallets (user_id) values ($1) on conflict (user_id) do nothing`, [fromUserId]);
-    await query(`insert into wallets (user_id) values ($1) on conflict (user_id) do nothing`, [toUserId]);
+    await tx.query(`insert into wallets (user_id) values ($1) on conflict (user_id) do nothing`, [fromUserId]);
+    await tx.query(`insert into wallets (user_id) values ($1) on conflict (user_id) do nothing`, [toUserId]);
 
     // lock rows
-    const { rows: fromRows } = await query(`select * from wallets where user_id = $1 for update`, [fromUserId]);
-    const { rows: toRows   } = await query(`select * from wallets where user_id = $1 for update`, [toUserId]);
+    const { rows: fromRows } = await tx.query(`select * from wallets where user_id = $1 for update`, [fromUserId]);
+    const { rows: toRows   } = await tx.query(`select * from wallets where user_id = $1 for update`, [toUserId]);
 
     const from = fromRows[0];
     const to   = toRows[0];
@@ -402,7 +421,7 @@ async function mergeWallets({ fromUserId, toUserId }) {
 
     // move balance
     if (fromCoins > 0) {
-      await query(
+      await tx.query(
         `update wallets set coins = coins + $2, updated_at = now() where user_id = $1`,
         [toUserId, fromCoins]
       );
@@ -412,7 +431,7 @@ const fromPaid = !!from?.paid_ever;
 const fromDate = from?.first_paid_date || null;
 
 if (fromPaid || fromDate) {
-  await query(
+  await tx.query(
     `update wallets
         set paid_ever = (paid_ever OR $2),
             first_paid_date = case
@@ -427,29 +446,24 @@ if (fromPaid || fromDate) {
 }
 
     // move ledger/credits history so trial/purchases follow the user
-    await query(`update credits set user_id = $2 where user_id = $1`, [fromUserId, toUserId]);
+    await tx.query(`update credits set user_id = $2 where user_id = $1`, [fromUserId, toUserId]);
     // ---- Prevent trial double-claim after merge ----
 const fromTrialId = `trial:${fromUserId}`;
 const toTrialId   = `trial:${toUserId}`;
 
 // If destination doesn't already have a trial id, rename guest trial -> google trial
-const toHasTrial = await query(`select 1 from credits where id = $1`, [toTrialId]);
+const toHasTrial = await tx.query(`select 1 from credits where id = $1`, [toTrialId]);
 
 if (!toHasTrial.rowCount) {
-  await query(`update credits set id = $2 where id = $1`, [fromTrialId, toTrialId]);
+  await tx.query(`update credits set id = $2 where id = $1`, [fromTrialId, toTrialId]);
 } else {
   // If google already has a trial record, remove guest trial record
-  await query(`delete from credits where id = $1`, [fromTrialId]);
+  await tx.query(`delete from credits where id = $1`, [fromTrialId]);
 }
 
     // delete guest wallet (prevents reuse/double dipping)
-    await query(`delete from wallets where user_id = $1`, [fromUserId]);
-
-    await query('commit');
-  } catch (e) {
-    await query('rollback');
-    throw e;
-  }
+    await tx.query(`delete from wallets where user_id = $1`, [fromUserId]);
+  });
 }
 
 async function authRequired(req, res, next) {
