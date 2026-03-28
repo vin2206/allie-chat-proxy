@@ -1956,6 +1956,27 @@ app.post(
       );
       let userMessage = null;
       let audioPath = null;
+      const normalizeTurns = (rawTurns) => {
+        const arr = Array.isArray(rawTurns) ? rawTurns : [];
+        return arr.map((m) => {
+          const rawRole = String(
+            (typeof m?.role === 'string' ? m.role :
+            (typeof m?.sender === 'string' ? m.sender : '')) || ''
+          ).trim().toLowerCase();
+
+          const role =
+            rawRole === 'assistant' || rawRole === 'allie' || rawRole === 'bot'
+              ? 'assistant'
+              : (rawRole === 'system' ? 'system' : 'user');
+
+          const content =
+            (typeof m?.content === 'string' ? m.content :
+            (typeof m?.text === 'string' ? m.text :
+            (m?.audioUrl ? '[voice note]' : '')));
+
+          return { role, content: String(content || '').trim() };
+        });
+      };
       const ctxCosts = getCostsForReq(req);
       const TEXT_COST = ctxCosts.text;
       const VOICE_COST = ctxCosts.voice;
@@ -2088,34 +2109,7 @@ if (req.file) {
       else if (req.body.message) {
         userMessage = req.body.message;
       }
-      // NEW: accept { history } OR { messages }
-      else if (req.body.messages || req.body.history) {
-        const raw = (req.body.messages ?? req.body.history);
-
-        let arr = raw;
-        if (typeof raw === 'string') {
-          try { arr = JSON.parse(raw); } catch { arr = []; }
-        }
-
-        // Normalize possible history shapes:
-        // A) OpenAI-style: [{role, content}]
-        // B) Your UI-style: [{sender:'user'|'allie', text:'...'}]
-        const norm = (Array.isArray(arr) ? arr : []).map(m => {
-          const role =
-            m?.role ||
-            (m?.sender === 'user' ? 'user' : (m?.sender ? 'assistant' : undefined)) ||
-            'user';
-
-          const content =
-            (typeof m?.content === 'string' ? m.content :
-            (typeof m?.text === 'string' ? m.text :
-            (m?.audioUrl ? '[voice note]' : '')));
-
-          return { role, content };
-        });
-
-        userMessage = norm[norm.length - 1]?.content || '';
-      }
+      // If text/message is absent, we'll fallback to normalized history below.
       // --- Helpers: caps & clamps (used early) ---
       function hardCapWords(s = "", n = 220) {
         const w = (s || "").trim().split(/\s+/);
@@ -2123,48 +2117,68 @@ if (req.file) {
         return w.slice(0, n).join(" ") + " …";
       }
 
-      // Hard cap user text to 220 words to prevent cost spikes
-      if (userMessage && typeof userMessage === 'string') {
-        userMessage = hardCapWords(userMessage, 220);
-      }
-
       console.log("POST /chat");
 
-      // --- normalize latest user text once for voice trigger check ---
-      const userTextJustSent = (userMessage || "").toLowerCase().replace(/\s+/g, " ");
+      let parsedMessagesInput = (req.body.messages ?? req.body.history ?? []);
+      if (typeof parsedMessagesInput === 'string') {
+        try { parsedMessagesInput = JSON.parse(parsedMessagesInput); } catch { parsedMessagesInput = []; }
+      }
+      const messagesInputWasArray = Array.isArray(parsedMessagesInput);
+      const safeMessages = normalizeTurns(parsedMessagesInput);
 
-      let messages = (req.body.messages ?? req.body.history ?? []);
-      if (typeof messages === 'string') {
-        try { messages = JSON.parse(messages); } catch { messages = []; }
-      }
-      const norm = (arr) => (Array.isArray(arr) ? arr : []).map(m => ({
-        ...m,
-        content: typeof m?.content === "string" ? m.content : (m?.audioUrl ? "[voice note]" : "")
-      }));
-      const safeMessages = norm(messages);
-      // If this request included audio and we have a Whisper transcript, push it
-      if (req.file && userMessage) {
-        safeMessages.push({ role: 'user', content: userMessage });
-      }
-      // If it's a text message (no audio), overwrite the last user message with the capped text
-      if (!req.file && typeof userMessage === 'string' && userMessage) {
-        for (let i = safeMessages.length - 1; i >= 0; i--) {
-          if (safeMessages[i].role === 'user') {
-            safeMessages[i] = { ...safeMessages[i], content: userMessage };
-            break;
-          }
-        }
-      }
-
-      // If frontend says reset, wipe context for a fresh start
+      // If frontend says reset, wipe context for a fresh start (before assembling current turn)
       if (req.body.reset === true || req.body.reset === 'true') {
         safeMessages.length = 0; // empty array in-place
         console.log(`[chat] reset=true for session=${sessionId}`);
       }
 
+      // If explicit text/audio is missing, fallback to last normalized user turn from history
+      if ((!userMessage || !String(userMessage).trim()) && safeMessages.length) {
+        for (let i = safeMessages.length - 1; i >= 0; i--) {
+          if (safeMessages[i]?.role === 'user' && safeMessages[i]?.content) {
+            userMessage = safeMessages[i].content;
+            break;
+          }
+        }
+      }
+
+      // Hard cap user text to 220 words to prevent cost spikes
+      if (typeof userMessage === 'string' && userMessage.trim()) {
+        userMessage = hardCapWords(userMessage, 220).trim();
+      }
+
+      // Ensure current user message is the effective final user turn sent to the model
+      if (typeof userMessage === 'string' && userMessage.trim()) {
+        const currentUserTurn = userMessage.trim();
+        const lastTurn = safeMessages[safeMessages.length - 1];
+        if (lastTurn?.role === 'user') {
+          safeMessages[safeMessages.length - 1] = { role: 'user', content: currentUserTurn };
+        } else {
+          safeMessages.push({ role: 'user', content: currentUserTurn });
+        }
+      }
+
+      // --- normalize latest user text once for voice trigger check ---
+      const userTextJustSent = String(userMessage || "").toLowerCase().replace(/\s+/g, " ").trim();
+
       // Hard history trim: keep only last 12 messages server-side
       const HARD_HISTORY_KEEP = 12;
       const finalMessages = safeMessages.slice(-HARD_HISTORY_KEEP);
+      const lastFinalTurn = finalMessages[finalMessages.length - 1];
+      const hasValidLastUserTurn = !!(
+        lastFinalTurn &&
+        lastFinalTurn.role === 'user' &&
+        typeof lastFinalTurn.content === 'string' &&
+        lastFinalTurn.content.trim().length
+      );
+      if (!hasValidLastUserTurn) {
+        return res.status(400).json({
+          ok: false,
+          error: 'bad_chat_payload',
+          code: 'missing_last_user_turn',
+          details: 'Final payload must end with a non-empty user turn.'
+        });
+      }
 
       // Count assistant replies so far (whole conversation)
       const userReplyCount = safeMessages.filter(m => m.role === "assistant").length;
@@ -2442,12 +2456,11 @@ if (!isOwnerByEmail) {
       locked: true
     });
   }
-}
+      }
 
       // ------------------ Input Format Validation ------------------
-      if (!Array.isArray(messages)) {
+      if (!messagesInputWasArray) {
         errorTimestamps.push(Date.now());
-        messages = [];
         const recent = errorTimestamps.filter(t => Date.now() - t < 10 * 60 * 1000);
         if (recent.length >= 5) {
           await fetch(`${selfBase(req)}/report-error`, {
