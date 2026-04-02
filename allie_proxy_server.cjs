@@ -1317,6 +1317,18 @@ ${cues[roleType] || ""}`;
 // Text reply language controls (text path only).
 const SUPPORTED_TEXT_LANGUAGES = new Set(['hinglish', 'english', 'tamil', 'telugu', 'kannada', 'malayalam']);
 
+function romanizedSouthLanguageRules(languageName) {
+  return [
+    `- Reply only in natural casual ${languageName}.`,
+    `- Write ${languageName} using normal English alphabet (Latin letters) only.`,
+    "- Do not use native script Unicode characters.",
+    "- Keep it chatty, natural, and texting-style, not textbook or formal translation style.",
+    "- Keep spellings easy to type and easy to read on an English keyboard.",
+    "- Prefer natural chat spelling over scholarly transliteration.",
+    "- Avoid mixing other languages unless the user asks to switch."
+  ];
+}
+
 function languageDirective(preferredLanguage) {
   const lang = SUPPORTED_TEXT_LANGUAGES.has(preferredLanguage) ? preferredLanguage : 'hinglish';
   const shared = [
@@ -1333,22 +1345,10 @@ function languageDirective(preferredLanguage) {
       "- Reply only in natural conversational English.",
       "- Do not mix in other languages unless the user asks to switch."
     ],
-    tamil: [
-      "- Reply only in natural conversational Tamil.",
-      "- Keep the output in Tamil; avoid mixing other languages unless the user asks to switch."
-    ],
-    telugu: [
-      "- Reply only in natural conversational Telugu.",
-      "- Keep the output in Telugu; avoid mixing other languages unless the user asks to switch."
-    ],
-    kannada: [
-      "- Reply only in natural conversational Kannada.",
-      "- Keep the output in Kannada; avoid mixing other languages unless the user asks to switch."
-    ],
-    malayalam: [
-      "- Reply only in natural conversational Malayalam.",
-      "- Keep the output in Malayalam; avoid mixing other languages unless the user asks to switch."
-    ]
+    tamil: romanizedSouthLanguageRules("Tamil"),
+    telugu: romanizedSouthLanguageRules("Telugu"),
+    kannada: romanizedSouthLanguageRules("Kannada"),
+    malayalam: romanizedSouthLanguageRules("Malayalam")
   };
 
   return [...shared, ...(rules[lang] || rules.hinglish)].join("\n");
