@@ -1314,6 +1314,46 @@ function roleDirectives(mode, roleType) {
 ### ROLE EMOTIONAL CUES
 ${cues[roleType] || ""}`;
 }
+// Text reply language controls (text path only).
+const SUPPORTED_TEXT_LANGUAGES = new Set(['hinglish', 'english', 'tamil', 'telugu', 'kannada', 'malayalam']);
+
+function languageDirective(preferredLanguage) {
+  const lang = SUPPORTED_TEXT_LANGUAGES.has(preferredLanguage) ? preferredLanguage : 'hinglish';
+  const shared = [
+    "### TEXT LANGUAGE OVERRIDE (TEXT-ONLY)",
+    "- This applies only to text replies and overrides earlier language mentions.",
+    "- Keep Shraddha's personality, role behavior, and chemistry unchanged."
+  ];
+  const rules = {
+    hinglish: [
+      "- Reply in natural Indian Hinglish, warm and conversational, mostly in Latin script.",
+      "- Natural Hindi-English mixing is allowed for Hinglish."
+    ],
+    english: [
+      "- Reply only in natural conversational English.",
+      "- Do not mix in other languages unless the user asks to switch."
+    ],
+    tamil: [
+      "- Reply only in natural conversational Tamil.",
+      "- Keep the output in Tamil; avoid mixing other languages unless the user asks to switch."
+    ],
+    telugu: [
+      "- Reply only in natural conversational Telugu.",
+      "- Keep the output in Telugu; avoid mixing other languages unless the user asks to switch."
+    ],
+    kannada: [
+      "- Reply only in natural conversational Kannada.",
+      "- Keep the output in Kannada; avoid mixing other languages unless the user asks to switch."
+    ],
+    malayalam: [
+      "- Reply only in natural conversational Malayalam.",
+      "- Keep the output in Malayalam; avoid mixing other languages unless the user asks to switch."
+    ]
+  };
+
+  return [...shared, ...(rules[lang] || rules.hinglish)].join("\n");
+}
+
 // ✅ STRANGER BIO (LOVE only)
 const shraddhaPromptStrangerLove = `### STRANGER MODE — LOVE
 You are still Shraddha, but the relationship has not been established yet.
@@ -2052,6 +2092,9 @@ const ROLE_ALIASES = {
 };
 rawType = ROLE_ALIASES[rawType] || rawType;
 
+const rawPreferredLanguage = (req.body.preferredLanguage || '').toString().trim().toLowerCase();
+const preferredLanguage = SUPPORTED_TEXT_LANGUAGES.has(rawPreferredLanguage) ? rawPreferredLanguage : 'hinglish';
+
 let roleMode = (rawMode === 'roleplay') ? 'roleplay' : 'stranger';
 let roleType = ALLOWED_ROLES.has(rawType) ? rawType : null;
 
@@ -2490,6 +2533,8 @@ Aaj ki tareekh: ${req.body.clientDate}. Jab bhi koi baat ya sawal year/month/dat
       const baseMode = SYSTEM_PROMPT_LOVE;
       // Love-only stranger bio
       const strangerBio = shraddhaPromptStrangerLove;
+      const isTextGenerationPath = !(!!req.file || !!req.body.wantVoice || wantsVoice(userTextJustSent));
+      const textLanguageBlock = isTextGenerationPath ? languageDirective(preferredLanguage) : "";
 
       const interactionModeCard = `### ACTIVE INTERACTION MODE
 - Current lane: ${interactionMode}
@@ -2505,7 +2550,8 @@ Aaj ki tareekh: ${req.body.clientDate}. Jab bhi koi baat ya sawal year/month/dat
         (roleMode === 'roleplay' ? "" : firstTurnsCard(phaseReplyCount)) +
         firstTurnRule +
         (timeInstruction || "") +
-        (dateInstruction || "");
+        (dateInstruction || "") +
+        (textLanguageBlock ? "\n\n" + textLanguageBlock : "");
 
       // Optional: roleplay requires premium (controlled by ENV)
       if (ROLEPLAY_NEEDS_PREMIUM && roleMode === 'roleplay' && !isPremium) {
